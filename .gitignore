@@ -1,0 +1,74 @@
+﻿## Build and Output Directories
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## Visual Studio
+.vs/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.sln.docstates
+*.ide/
+
+## Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## JetBrains Rider
+.idea/
+*.sln.iml
+
+## Test Results and Code Coverage
+TestResults/
+[Tt]est[Rr]esult*/
+*.trx
+coverage*.json
+coverage*.xml
+coverage*.info
+
+## NuGet Packages
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+project.lock.json
+project.assets.json
+
+## User-specific files
+*.rsuser
+*.suo
+*.user
+*.userprefs
+
+## Windows & macOS OS Files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+## Environment & Secrets (Never commit secrets!)
+.env
+.env.*
+*.local
+appsettings.Development.json
+appsettings.Production.json
+appsettings.*.local.json
+secrets.json
+
+## Crash dumps and trace logs
+*.dmp
+*.crash
+*.stackdump
+*.trace

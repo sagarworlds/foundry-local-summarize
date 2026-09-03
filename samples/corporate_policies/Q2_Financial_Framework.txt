@@ -1,0 +1,17 @@
+﻿POLICY DOCUMENT: FIN-2026-Q2
+TITLE: Q2 Financial Governance & Capital Allocation Framework
+EFFECTIVE DATE: April 1, 2026
+CLASSIFICATION: Internal Enterprise Use Only
+
+1. PURPOSE & JURISDICTION
+This framework defines capital allocation limits, procurement authorization gates, and operational spend ceilings for all technical, operational, and research divisions.
+
+2. EXPENDITURE AUTHORIZATION THRESHOLDS
+- Discretionary Departmental Limit: Up to $25,000 may be approved by Department Managers.
+- Senior Director Gate: Expenditures between $25,001 and $100,000 require Senior Director sign-off.
+- Mandatory VP Authorization: Any single purchase order, contract, or equipment acquisition exceeding $100,000 requires explicit written authorization from the Vice President of Finance.
+- Quarterly Project Ceiling: No individual engineering or modernization initiative may exceed $350,000 in aggregate quarterly capital without Board Committee review.
+
+3. HARDWARE & CLOUD INFRASTRUCTURE POLICY
+- Prioritize on-premises and edge inference hardware (NPUs, GPUs) to minimize recurring external cloud token consumption.
+- Vendor commitments must mandate fixed price quotes with guaranteed SLA terms.

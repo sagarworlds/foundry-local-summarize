@@ -1,0 +1,17 @@
+﻿EXECUTIVE MEETING TRANSCRIPT: PROJECT HELIOS REVIEW
+DATE: August 28, 2026 | TIME: 10:00 AM EST
+PARTICIPANTS:
+- Marcus Vance (VP of Technology)
+- David Chen (Lead Systems Architect)
+- Sarah Jenkins (Director of Finance)
+- Elena Rostova (Corporate Legal Counsel)
+
+[00:00:10] Marcus: Let's begin the review for Project Helios modernization. David, please give us the technical status.
+[00:00:35] David: Phase 1 refactoring is 100% complete. We decoupled the core ingestion pipeline and verified compatibility with Microsoft.Extensions.AI.
+[00:01:15] Marcus: What are the requirements for Phase 2 hardware acceleration?
+[00:01:28] David: For Phase 2, we need dedicated local GPU acceleration servers to run Foundry Local models offline. The total hardware quote from our supplier is $150,000.
+[00:02:05] Sarah: David, as you know from our Q2 Financial Framework, any expenditure over $100,000 triggers mandatory VP approval. Marcus, we will need your formal sign-off.
+[00:02:40] Marcus: Understood. David, submit the formal authorization request to my office by Friday.
+[00:03:10] Elena: On the vendor side, I reviewed the draft hardware purchase agreement. The supplier attempted to insert a 3x contract value liability cap. That violates our corporate policy LEG-104 which limits liability to 1x contract value. I will redline and return the contract by Tuesday.
+[00:04:00] Sarah: I will update our ERP budget forecast once David's request is submitted.
+[00:04:30] Marcus: Excellent. Action items: David submits VP approval by Friday; Elena handles contract redline; Sarah updates the quarterly model. Adjourned.

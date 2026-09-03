@@ -1,0 +1,174 @@
+﻿<UserControl x:Class="FoundrySummarizer.Wpf.Views.EvaluationView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:converters="clr-namespace:FoundrySummarizer.Wpf.Converters"
+             mc:Ignorable="d" d:DesignHeight="750" d:DesignWidth="1000">
+    <UserControl.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:StatusToBrushConverter x:Key="StatusBrush" />
+        <converters:ScoreToBrushConverter x:Key="ScoreBrush" />
+    </UserControl.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,16">
+            <StackPanel DockPanel.Dock="Left">
+                <TextBlock Text="Automated Rigor &amp; Evaluation Pipeline" Style="{StaticResource HeadingLarge}" />
+                <TextBlock Text="Powered by Microsoft.Extensions.AI.Evaluation (Completeness, Persona Adherence, Anti-Hallucination Grounding, and Content Safety Guardrails)." 
+                           Style="{StaticResource BodyText}" Margin="0,4,0,0" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                <Button Content="🛡️ Run Rigor Evaluation" Style="{StaticResource PrimaryButton}" Command="{Binding RunEvaluationCommand}" Margin="0,0,8,0" />
+                <Button Content="⚠️ Test Unsafe PII Guardrail" Style="{StaticResource SecondaryButton}" Command="{Binding TestUnsafeGuardrailCommand}" />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- Status Banner -->
+        <Border Grid.Row="1" Style="{StaticResource SurfaceCard}" Margin="0,0,0,16">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <TextBlock Text="Overall Audit Status: " Style="{StaticResource HeadingMedium}" Margin="0,0,8,0" />
+                    <Border CornerRadius="4" Padding="10,4" Background="#1e293b">
+                        <TextBlock Text="{Binding OverallStatus}" Foreground="{Binding OverallStatus, Converter={StaticResource StatusBrush}}" FontWeight="Bold" FontSize="13" />
+                    </Border>
+                </StackPanel>
+                <TextBlock Text="{Binding StatusMessage}" Style="{StaticResource MutedText}" VerticalAlignment="Center" DockPanel.Dock="Right" HorizontalAlignment="Right" />
+            </DockPanel>
+        </Border>
+
+        <!-- 4 Metric Scorecards with Meter Gauges -->
+        <Grid Grid.Row="2" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Card 1: Completeness -->
+            <Border Grid.Column="0" Style="{StaticResource ModernCard}" Margin="0,0,6,0">
+                <StackPanel>
+                    <TextBlock Text="Coverage &amp; Completeness" Style="{StaticResource MutedText}" />
+                    <TextBlock Text="{Binding CompletenessScore, StringFormat='{}{0:P0}'}" FontSize="24" FontWeight="Bold" Foreground="{Binding CompletenessScore, Converter={StaticResource ScoreBrush}}" Margin="0,6,0,4" />
+                    <ProgressBar Value="{Binding CompletenessScore}" Minimum="0" Maximum="1" Height="6" Foreground="{Binding CompletenessScore, Converter={StaticResource ScoreBrush}}" Background="{StaticResource BorderBrush}" Margin="0,0,0,6" />
+                    <TextBlock Text="Measures source fact coverage" Style="{StaticResource MutedText}" FontSize="11" />
+                </StackPanel>
+            </Border>
+
+            <!-- Card 2: Persona Adherence -->
+            <Border Grid.Column="1" Style="{StaticResource ModernCard}" Margin="6,0,6,0">
+                <StackPanel>
+                    <TextBlock Text="Persona Format Adherence" Style="{StaticResource MutedText}" />
+                    <TextBlock Text="{Binding PersonaAdherenceScore, StringFormat='{}{0:P0}'}" FontSize="24" FontWeight="Bold" Foreground="{Binding PersonaAdherenceScore, Converter={StaticResource ScoreBrush}}" Margin="0,6,0,4" />
+                    <ProgressBar Value="{Binding PersonaAdherenceScore}" Minimum="0" Maximum="1" Height="6" Foreground="{Binding PersonaAdherenceScore, Converter={StaticResource ScoreBrush}}" Background="{StaticResource BorderBrush}" Margin="0,0,0,6" />
+                    <TextBlock Text="Validates structure &amp; headings" Style="{StaticResource MutedText}" FontSize="11" />
+                </StackPanel>
+            </Border>
+
+            <!-- Card 3: Grounding / Anti-Hallucination -->
+            <Border Grid.Column="2" Style="{StaticResource ModernCard}" Margin="6,0,6,0">
+                <StackPanel>
+                    <TextBlock Text="Grounding (Anti-Hallucination)" Style="{StaticResource MutedText}" />
+                    <TextBlock Text="{Binding GroundingScore, StringFormat='{}{0:P0}'}" FontSize="24" FontWeight="Bold" Foreground="{Binding GroundingScore, Converter={StaticResource ScoreBrush}}" Margin="0,6,0,4" />
+                    <ProgressBar Value="{Binding GroundingScore}" Minimum="0" Maximum="1" Height="6" Foreground="{Binding GroundingScore, Converter={StaticResource ScoreBrush}}" Background="{StaticResource BorderBrush}" Margin="0,0,0,6" />
+                    <TextBlock Text="Fact-checks all figures &amp; terms" Style="{StaticResource MutedText}" FontSize="11" />
+                </StackPanel>
+            </Border>
+
+            <!-- Card 4: Content Safety Guardrail -->
+            <Border Grid.Column="3" Style="{StaticResource ModernCard}" Margin="6,0,0,0">
+                <StackPanel>
+                    <TextBlock Text="Content Safety Guardrail" Style="{StaticResource MutedText}" />
+                    <TextBlock Text="{Binding ContentSafetyPassed, Converter={StaticResource StatusBrush}}" FontSize="22" FontWeight="Bold" Margin="0,6,0,4">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="PASS: SAFE" />
+                                <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding ContentSafetyPassed}" Value="False">
+                                        <Setter Property="Text" Value="INTERCEPTED" />
+                                        <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="Intercepts PII, SSNs, API secrets" Style="{StaticResource MutedText}" FontSize="11" Margin="0,6,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+
+        <!-- Detailed Audit Logs & Diagnostics -->
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3*" />
+                <ColumnDefinition Width="2*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: Evaluated Metrics Breakdown -->
+            <Border Grid.Column="0" Style="{StaticResource ModernCard}" Margin="0,0,12,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="Metric Dimensions (Microsoft.Extensions.AI.Evaluation)" Style="{StaticResource HeadingMedium}" Margin="0,0,0,10" />
+
+                    <ListBox Grid.Row="1" ItemsSource="{Binding Metrics}"
+                             Background="Transparent" BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Style="{StaticResource SurfaceCard}" Margin="0,0,0,8">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Left">
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13" />
+                                            <TextBlock Text="{Binding Interpretation, StringFormat='Rating: {0}'}" Style="{StaticResource MutedText}" Margin="0,2,0,0" />
+                                        </StackPanel>
+                                        <TextBlock Text="{Binding Value, StringFormat='{}{0:P0}'}" FontWeight="Bold" FontSize="16" Foreground="{Binding Value, Converter={StaticResource ScoreBrush}}" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+
+            <!-- Right: Guardrail Violations & Diagnostics -->
+            <Border Grid.Column="1" Style="{StaticResource ModernCard}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="Guardrail Warnings &amp; Diagnostic Log" Style="{StaticResource HeadingMedium}" Margin="0,0,0,10" />
+
+                    <ListBox Grid.Row="1" ItemsSource="{Binding GuardrailWarnings}"
+                             Background="Transparent" BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#450a0a" BorderBrush="#dc2626" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,8">
+                                    <DockPanel>
+                                        <TextBlock Text="🚨 " FontSize="14" DockPanel.Dock="Left" />
+                                        <TextBlock Text="{Binding}" Foreground="#fca5a5" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

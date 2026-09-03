@@ -1,0 +1,16 @@
+﻿PROJECT PROPOSAL: ENTERPRISE LOCAL INTELLIGENCE ROLLOUT
+SPONSOR: Engineering & Operations
+PREPARED BY: David Chen, Principal Architect
+PROJECT ESTIMATE: $210,000
+
+EXECUTIVE SUMMARY:
+This proposal requests funding for enterprise-wide deployment of Microsoft Foundry Local summarization nodes. By switching from external SaaS cloud models to local small language models (SLMs like Phi-3.5 and Llama 3.2), the company will eliminate an estimated $12,000 monthly cloud inference bill.
+
+BUDGET BREAKDOWN:
+- High-performance edge inference workstations: $140,000
+- Open-source model tuning & local orchestration: $45,000
+- Security audit & SAIF compliance certification: $25,000
+Total Requested: $210,000
+
+POLICY CONSIDERATIONS:
+Note that this single capital expenditure exceeds the $100,000 threshold and therefore requires Vice President approval in accordance with the Q2 Financial Framework. The payback period is estimated at 17.5 months.

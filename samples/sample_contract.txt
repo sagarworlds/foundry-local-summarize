@@ -1,0 +1,19 @@
+﻿MASTER SERVICES AGREEMENT
+BETWEEN: Global Enterprise Solutions Inc. ("Client") AND Apex Cloud Technologies LLC ("Provider")
+EFFECTIVE DATE: September 1, 2026
+
+1. SERVICES & ENGAGEMENT
+Provider agrees to deliver AI infrastructure optimization and data ingestion integration services as detailed in Statement of Work #4. Total initial engagement fee is $85,000.
+
+2. DATA PRIVACY & LOCAL PROCESSING
+Provider acknowledges that Client enforces strict offline data residency. No customer data or trade secret materials shall be transferred outside the designated sovereign network boundary.
+
+3. LIMITATION OF LIABILITY
+Provider proposes that total aggregate liability arising out of this agreement shall be capped at 3x the total fees paid under this agreement.
+Client Legal Note: Current corporate standard mandates maximum 1x to 2x contract value cap ($85,000 - $170,000 max). The proposed 3x clause requires renegotiation.
+
+4. INDEMNIFICATION & REMEDIES
+Provider shall defend, indemnify, and hold harmless Client against third-party claims alleging patent, copyright, or trademark infringement.
+
+5. TERMINATION & CURE PERIOD
+Either party may terminate for material breach upon fifteen (15) days written notice if such breach remains uncured. Termination for convenience requires thirty (30) days notice.
