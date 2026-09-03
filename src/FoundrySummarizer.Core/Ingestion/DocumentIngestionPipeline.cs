@@ -1,4 +1,4 @@
-﻿namespace FoundrySummarizer.Core.Ingestion;
+namespace FoundrySummarizer.Core.Ingestion;
 
 public interface IDocumentIngestionPipeline
 {
@@ -15,14 +15,17 @@ public class DocumentIngestionPipeline : IDocumentIngestionPipeline
 
     public DocumentIngestionPipeline(IEnumerable<IDocumentParser>? parsers = null, SemanticChunker? chunker = null)
     {
-        _parsers = parsers?.ToList() ?? new List<IDocumentParser>
-        {
-            new PlainTextParser(),
-            new DocxDocumentParser(),
-            new PptxDocumentParser(),
-            new PdfDocumentParser(),
-            new AudioTranscriptionService()
-        };
+        var parserList = parsers?.ToList();
+        _parsers = parserList != null && parserList.Count > 0 
+            ? parserList 
+            : new List<IDocumentParser>
+            {
+                new PlainTextParser(),
+                new DocxDocumentParser(),
+                new PptxDocumentParser(),
+                new PdfDocumentParser(),
+                new AudioTranscriptionService()
+            };
 
         _chunker = chunker ?? new SemanticChunker();
     }
