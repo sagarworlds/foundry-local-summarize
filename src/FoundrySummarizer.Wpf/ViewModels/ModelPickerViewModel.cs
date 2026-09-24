@@ -143,30 +143,50 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
     private static readonly TimeSpan LoadedCheckInterval = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Keeps "ready" truthful: Foundry Local unloads idle models after their time-to-live, and the service can stop.
-    /// Every <see cref="LoadedCheckInterval"/> the loaded-model list is read again; an unloaded model is loaded
-    /// again (behind the loading overlay), and an unreachable service turns the app to "not ready".
+    /// Keeps "ready" truthful in both directions. Foundry Local unloads idle models after their time-to-live, its
+    /// service can stop or restart on a new port, and the user can load the model outside the app. Every
+    /// <see cref="LoadedCheckInterval"/> the service is found again and its loaded models are read:
+    /// <list type="bullet">
+    /// <item>loaded: ready, even if the app had marked it not ready (e.g. the user loaded it in a terminal);</item>
+    /// <item>not loaded: loaded again, if it was ready or only lost because the service stopped answering;</item>
+    /// <item>unknown: not ready, but only after two checks in a row fail, so one slow answer is no alarm.</item>
+    /// </list>
     /// </summary>
     private async Task WatchLoadedModelAsync()
     {
         using var timer = new PeriodicTimer(LoadedCheckInterval);
+        int consecutiveFailures = 0;
         while (await timer.WaitForNextTickAsync())
         {
             // Skip while the model is being used or changed; the next tick checks again.
-            if (!IsModelReady || IsModelLoading || _activity.IsBusy) continue;
+            if (IsModelLoading || _activity.IsBusy) continue;
 
             try
             {
-                var isLoaded = await _modelClient.IsActiveModelLoadedAsync();
+                var state = await _modelClient.GetActiveModelStateAsync();
                 if (IsModelLoading || _activity.IsBusy) continue; // something started while we were asking
 
-                if (isLoaded is null)
+                switch (state.Kind)
                 {
-                    SetNotReady("Foundry Local is not responding. Click ↻ to reconnect.");
-                }
-                else if (isLoaded == false)
-                {
-                    await ReloadActiveModelAsync();
+                    case ActiveModelStateKind.Loaded:
+                        consecutiveFailures = 0;
+                        _lostBecauseUnreachable = false;
+                        if (!IsModelReady) MarkReady(_modelClient.ActiveModelId);
+                        break;
+
+                    case ActiveModelStateKind.NotLoaded:
+                        consecutiveFailures = 0;
+                        if (IsModelReady || _lostBecauseUnreachable)
+                        {
+                            _lostBecauseUnreachable = false;
+                            await ReloadActiveModelAsync();
+                        }
+                        break; // a model that failed to load stays "not ready" until the user picks or refreshes
+
+                    case ActiveModelStateKind.Unknown when IsModelReady && ++consecutiveFailures >= 2:
+                        _lostBecauseUnreachable = true;
+                        SetNotReady($"{state.Problem} Click ↻ to reconnect.");
+                        break;
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -175,6 +195,22 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
                 SetNotReady($"Could not check the model state: {ex.Message}");
             }
         }
+    }
+
+    // True when the app went "not ready" only because the service stopped answering, so the model is reloaded
+    // automatically once the service is back, instead of waiting for the user.
+    private bool _lostBecauseUnreachable;
+
+    private string ReadyText => _modelClient.UserSelectedModelId is null ? "Ready (model chosen automatically)" : "Ready";
+
+    /// <summary>Marks <paramref name="modelId"/> as loaded and the app as ready, without asking the service again.</summary>
+    private void MarkReady(string modelId)
+    {
+        ShowModels(AvailableModels
+            .Select(m => m with { IsLoaded = m.IsLoaded || FoundryLocalService.SameModel(m.Id, modelId) })
+            .ToList(), modelId);
+        IsModelReady = true;
+        StatusText = ReadyText;
     }
 
     private async Task ReloadActiveModelAsync()
@@ -217,7 +253,7 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
             })
             .ToList(), status.ModelId);
         IsModelReady = true;
-        StatusText = _modelClient.UserSelectedModelId is null ? "Ready (model chosen automatically)" : "Ready";
+        StatusText = ReadyText;
     }
 
     private void SetNotReady(string problem)

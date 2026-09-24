@@ -14,6 +14,24 @@ namespace FoundrySummarizer.Core.Routing;
 /// <param name="Client">Chat client for the model; null when unavailable.</param>
 public record LocalModelStatus(bool IsAvailable, Uri? Endpoint, string ModelId, string? Problem, IChatClient? Client);
 
+/// <summary>Whether the active model is in memory, per <see cref="FoundryLocalService.GetActiveModelStateAsync"/>.</summary>
+public enum ActiveModelStateKind
+{
+    /// <summary>The model is in Foundry Local's memory.</summary>
+    Loaded,
+
+    /// <summary>The service answers, but the model is not in memory (e.g. unloaded after its idle time-to-live).</summary>
+    NotLoaded,
+
+    /// <summary>The service could not be reached or could not list its loaded models.</summary>
+    Unknown
+}
+
+/// <summary>Result of <see cref="FoundryLocalService.GetActiveModelStateAsync"/>.</summary>
+/// <param name="Kind">Loaded, not loaded, or unknown.</param>
+/// <param name="Problem">For <see cref="ActiveModelStateKind.Unknown"/>, what failed; otherwise null.</param>
+public record ActiveModelState(ActiveModelStateKind Kind, string? Problem);
+
 /// <summary>A chat model available on this machine.</summary>
 /// <param name="Id">Model id as the service reports it, e.g. "Phi-4-mini-instruct-generic-gpu:5".</param>
 /// <param name="IsLoaded">True when the model is already in memory and answers without a load delay.</param>
@@ -323,17 +341,37 @@ public sealed class FoundryLocalService : IDisposable
     }
 
     /// <summary>
-    /// Whether the active model is in Foundry Local's memory right now.
+    /// Whether the active model is in Foundry Local's memory right now. The service is found again first, so a
+    /// restart on a new port is followed, and a failed listing is retried once before it counts as a failure.
     /// </summary>
-    /// <returns>True or false for Foundry Local; null when the service is unreachable or does not report loaded models.</returns>
-    public async Task<bool?> IsActiveModelLoadedAsync(CancellationToken cancellationToken = default)
+    /// <param name="cancellationToken">Cancels the check.</param>
+    public async Task<ActiveModelState> GetActiveModelStateAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (_serviceBase is null) return null;
-            var loaded = await _catalog.TryGetModelIdsAsync(_serviceBase, "/openai/loadedmodels", cancellationToken);
-            return loaded?.Any(id => SameModel(id, _activeModelId));
+            var (serviceBase, problem) = await FindReachableServiceAsync(cancellationToken);
+            if (serviceBase is null)
+            {
+                return new ActiveModelState(ActiveModelStateKind.Unknown, problem);
+            }
+
+            var listing = await _catalog.ListModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
+            if (listing.Ids is null)
+            {
+                await Task.Delay(LoadConfirmDelay, cancellationToken);
+                listing = await _catalog.ListModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
+            }
+
+            if (listing.Ids is null)
+            {
+                return new ActiveModelState(ActiveModelStateKind.Unknown,
+                    $"Foundry Local is running at {serviceBase} but could not list its loaded models ({listing.Error}).");
+            }
+
+            return new ActiveModelState(
+                listing.Ids.Any(id => SameModel(id, _activeModelId)) ? ActiveModelStateKind.Loaded : ActiveModelStateKind.NotLoaded,
+                null);
         }
         finally
         {

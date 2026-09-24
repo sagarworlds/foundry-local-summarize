@@ -40,7 +40,7 @@ public class FoundryLocalServiceTests
 
         public FakeServer(IEnumerable<string> liveAuthorities, Func<string, HttpResponseMessage> respond, List<string>? bodies = null)
         {
-            _liveAuthorities = liveAuthorities.ToHashSet();
+            _liveAuthorities = liveAuthorities as HashSet<string> ?? liveAuthorities.ToHashSet(); // a passed set stays live: tests can move the service
             _respond = respond;
             _bodies = bodies;
         }
@@ -405,17 +405,59 @@ public class FoundryLocalServiceTests
     }
 
     [Fact]
-    public async Task IsActiveModelLoaded_ReflectsTheServiceNow()
+    public async Task ActiveModelState_ReflectsTheServiceNow()
     {
         var foundry = new StatefulFoundry();
         using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), foundry.Server);
-        Assert.Null(await service.IsActiveModelLoadedAsync());          // service not found yet
+        Assert.Equal(ActiveModelStateKind.NotLoaded, (await service.GetActiveModelStateAsync()).Kind);
 
         await service.CheckAsync(ensureModelLoaded: true);
-        Assert.True(await service.IsActiveModelLoadedAsync());
+        Assert.Equal(ActiveModelStateKind.Loaded, (await service.GetActiveModelStateAsync()).Kind);
 
         foundry.Loaded.Clear();                                          // unloaded after its idle time-to-live
-        Assert.False(await service.IsActiveModelLoadedAsync());
+        Assert.Equal(ActiveModelStateKind.NotLoaded, (await service.GetActiveModelStateAsync()).Kind);
+    }
+
+    [Fact]
+    public async Task ActiveModelState_FollowsTheServiceToANewPort()
+    {
+        // The model was loaded at :5273; the service then restarted on :6001 (e.g. after 'foundry service restart').
+        int statusCalls = 0;
+        var cli = new FakeCli((_, _) => new FoundryCliResult(true,
+            ++statusCalls == 1 ? RunningStatus : RunningStatus.Replace("5273", "6001"), null));
+        var live = new HashSet<string> { "127.0.0.1:5273" };
+        var server = new FakeServer(live, path => path == "/openai/loadedmodels"
+            ? FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu"]""")
+            : FakeServer.Json("{}"));
+        using var service = new FoundryLocalService(Options(), cli, server);
+        Assert.True((await service.CheckAsync(ensureModelLoaded: true)).IsAvailable);
+
+        live.Clear();
+        live.Add("127.0.0.1:6001");
+
+        Assert.Equal(ActiveModelStateKind.Loaded, (await service.GetActiveModelStateAsync()).Kind);
+    }
+
+    [Fact]
+    public async Task ActiveModelState_RetriesOnceAndThenSaysWhatFailed()
+    {
+        int listings = 0;
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path == "/openai/loadedmodels"
+            ? (++listings == 1 ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) : FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu"]"""))
+            : FakeServer.Json("{}"));
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        Assert.Equal(ActiveModelStateKind.Loaded, (await service.GetActiveModelStateAsync()).Kind); // one hiccup is retried
+
+        var failing = new FakeServer(new[] { "127.0.0.1:5273" }, path => path == "/openai/loadedmodels"
+            ? new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            : FakeServer.Json("{}"));
+        using var broken = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), failing);
+        var state = await broken.GetActiveModelStateAsync();
+
+        Assert.Equal(ActiveModelStateKind.Unknown, state.Kind);
+        Assert.Contains("could not list its loaded models", state.Problem);
+        Assert.Contains("HTTP 500", state.Problem);
     }
 
     [Theory]

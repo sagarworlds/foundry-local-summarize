@@ -3,6 +3,11 @@ using System.Text.Json;
 
 namespace FoundrySummarizer.Core.Routing;
 
+/// <summary>Result of listing model ids from one route.</summary>
+/// <param name="Ids">The ids, or null when the route could not be read.</param>
+/// <param name="Error">Why the route could not be read; null on success.</param>
+public record ModelIdListing(IReadOnlyList<string>? Ids, string? Error);
+
 /// <summary>
 /// Discovers which models a local OpenAI-compatible endpoint (Foundry Local or Ollama) can serve.
 /// </summary>
@@ -33,7 +38,12 @@ public class LocalModelCatalog
     /// The ids, an empty list when the route exists but lists nothing, or null when the route is not served
     /// (Ollama lacks the Foundry routes) or cannot be read. Null lets callers tell "not Foundry" from "none loaded".
     /// </returns>
-    public async Task<IReadOnlyList<string>?> TryGetModelIdsAsync(Uri baseUri, string route, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>?> TryGetModelIdsAsync(Uri baseUri, string route, CancellationToken cancellationToken = default) =>
+        (await ListModelIdsAsync(baseUri, route, cancellationToken)).Ids;
+
+    /// <summary>Like <see cref="TryGetModelIdsAsync"/>, but says why the listing failed.</summary>
+    /// <returns>The ids, or null ids plus the reason (HTTP status, connection error or unreadable body).</returns>
+    public async Task<ModelIdListing> ListModelIdsAsync(Uri baseUri, string route, CancellationToken cancellationToken = default)
     {
         var url = $"{baseUri.Scheme}://{baseUri.Authority}{route}";
         try
@@ -41,16 +51,17 @@ public class LocalModelCatalog
             using var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return new ModelIdListing(null, $"{url} answered HTTP {(int)response.StatusCode}");
             }
 
-            return ParseModelIds(await response.Content.ReadAsStringAsync(cancellationToken));
+            return new ModelIdListing(ParseModelIds(await response.Content.ReadAsStringAsync(cancellationToken)), null);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException
+                                   || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
         {
             // Discovery is an optimisation: on failure the caller falls back to another route or the configured id.
             System.Diagnostics.Debug.WriteLine($"[LocalModelCatalog] Model listing failed at {url}: {ex.Message}");
-            return null;
+            return new ModelIdListing(null, $"{url} failed: {ex.Message}");
         }
     }
 
