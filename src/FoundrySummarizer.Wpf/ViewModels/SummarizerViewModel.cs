@@ -4,8 +4,10 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.AI;
 using FoundrySummarizer.Core.Grounding;
+using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
+using FoundrySummarizer.Core.Summarization;
 
 namespace FoundrySummarizer.Wpf.ViewModels;
 
@@ -14,6 +16,7 @@ public partial class SummarizerViewModel : ObservableObject
     private readonly IPromptyEngine _promptyEngine;
     private readonly HybridChatClientRouter _router;
     private readonly IVectorGroundingService _groundingService;
+    private readonly IDocumentSummarizer _summarizer;
 
     [ObservableProperty]
     private PromptyDocument? _selectedPersona;
@@ -46,8 +49,9 @@ public partial class SummarizerViewModel : ObservableObject
 
     public event Action<string, string>? OnSummaryGenerated;
 
-    public SummarizerViewModel(IPromptyEngine promptyEngine, HybridChatClientRouter router, IVectorGroundingService groundingService)
+    public SummarizerViewModel(IPromptyEngine promptyEngine, HybridChatClientRouter router, IVectorGroundingService groundingService, IDocumentSummarizer summarizer)
     {
+        _summarizer = summarizer;
         _promptyEngine = promptyEngine;
         _router = router;
         _groundingService = groundingService;
@@ -110,27 +114,26 @@ public partial class SummarizerViewModel : ObservableObject
                 groundingContext = await _groundingService.BuildGroundingPromptContextAsync(CurrentDocumentText);
             }
 
-            var variables = new Dictionary<string, string>
-            {
-                ["documentText"] = CurrentDocumentText,
-                ["groundingContext"] = groundingContext
-            };
-
             var activeDoc = SelectedPersona with
             {
                 SystemPrompt = SystemPrompt,
                 UserPromptTemplate = UserPromptTemplate
             };
 
-            var messages = _promptyEngine.RenderChatMessages(activeDoc, variables);
+            // Long documents are read in parts by the local model; skip that when the router will send
+            // the request to the large-context cloud model, which can read the whole document at once.
+            bool allowMultiPart = !_router.WouldEscalateToCloud(SemanticChunker.EstimateTokens(CurrentDocumentText));
+            var request = new SummarizationRequest(activeDoc, CurrentDocumentText, groundingContext, allowMultiPart);
 
-            GenerationStatus = "Processing via Foundry Local router...";
-            // Pass the persona's sampling settings (low temperature, output budget); otherwise the
-            // endpoint defaults apply and small models paraphrase loosely or truncate sections.
-            var response = await _router.GetResponseAsync(messages, activeDoc.ToChatOptions());
+            // Progress<T> captures the UI synchronization context, so status updates are marshalled safely.
+            var progress = new Progress<string>(status => GenerationStatus = status);
+            var result = await _summarizer.SummarizeAsync(request, progress);
 
-            GeneratedSummary = response.Text ?? string.Empty;
-            GenerationStatus = $"Summary generated successfully via {LastRoutingInfo?.RouteName ?? "Foundry Local"}";
+            GeneratedSummary = result.Summary;
+            var route = LastRoutingInfo?.RouteName ?? "Foundry Local";
+            GenerationStatus = result.UsedMultiPart
+                ? $"Summary generated from {result.PartCount} document parts via {route}"
+                : $"Summary generated successfully via {route}";
             OnSummaryGenerated?.Invoke(CurrentDocumentName, GeneratedSummary);
         }
         catch (Exception ex)

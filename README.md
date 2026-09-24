@@ -112,7 +112,9 @@ Prompts are decoupled from compiled application code using Microsoft's standard 
 - **Dynamic Daemon Auto-Discovery**: Microsoft Foundry Local assigns a dynamic port by default (`port: auto`). The router automatically discovers active loopback endpoints directly from `~/.foundry/daemon.json` without requiring manual port updates when the daemon restarts.
 - **Configurable via `appsettings.json`**: Both Local and Cloud endpoints are completely configurable without hard-coded values.
 - **Hybrid Cost Escalation**: Standard documents route locally; documents exceeding the complexity threshold (> 2,500 tokens) can escalate to Cloud Frontier models when Privacy Mode is disabled.
-- **Offline High-Fidelity Engine**: Self-contained fallback ensures turnkey demonstration and usage even if the background daemon is temporarily paused.
+- **Automatic Model Selection**: When Foundry Local is reachable, the router lists the models it has loaded and uses the first match from `Local.PreferredModels` (default: `phi-4-mini`, `qwen2.5-7b`, `phi-3.5-mini`, `qwen2.5-1.5b`), falling back to `Local.ModelId`. Sub-1B models cannot follow the summary templates reliably, so load a stronger one for accurate results, e.g. `foundry model run phi-4-mini`. Set `AutoSelectModel` to `false` to always use `ModelId`.
+- **Long-Document Summaries**: Documents longer than `Summarization.MaxSinglePassTokens` are read in parts. The model takes faithful notes on each part and then writes the persona summary from the combined notes, so nothing is silently cut off by a small model's context window.
+- **Offline Demo Engine**: If no model is reachable, a built-in demo engine returns illustrative template output, clearly labelled as not generated from your document.
 
 ### 4. Semantic Grounding (RAG with `Microsoft.Extensions.VectorData`)
 - Indexes verified corporate governance policies using `Microsoft.Extensions.VectorData` and a 384-dimensional cosine similarity embedder:

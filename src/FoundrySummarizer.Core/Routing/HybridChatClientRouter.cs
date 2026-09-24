@@ -32,10 +32,18 @@ public class HybridChatClientRouter : IChatClient
     private readonly FoundryOptions _options;
     private readonly LocalFoundryFallbackClient _fallbackClient = new();
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(3) };
+    private readonly LocalModelCatalog _modelCatalog;
+    private volatile string _activeLocalModelId;
     private IChatClient? _localClient;
     private IChatClient? _cloudClient;
 
-    public ChatClientMetadata Metadata => new("FoundryHybridRouter", new Uri(_options.LocalEndpoint), _options.LocalModelId);
+    public ChatClientMetadata Metadata => new("FoundryHybridRouter", new Uri(_options.LocalEndpoint), ActiveLocalModelId);
+
+    /// <summary>
+    /// The local model requests are sent to. Starts as the configured <c>Local.ModelId</c> and, when
+    /// <c>Local.AutoSelectModel</c> is on, is upgraded to the best preferred model the endpoint serves.
+    /// </summary>
+    public string ActiveLocalModelId => _activeLocalModelId;
 
     public RoutingDecisionInfo? LastRoutingDecision { get; private set; }
 
@@ -44,6 +52,8 @@ public class HybridChatClientRouter : IChatClient
     public HybridChatClientRouter(FoundryOptions options)
     {
         _options = options;
+        _activeLocalModelId = options.LocalModelId;
+        _modelCatalog = new LocalModelCatalog(_httpClient);
         InitializeClients();
     }
 
@@ -56,7 +66,7 @@ public class HybridChatClientRouter : IChatClient
                 new System.ClientModel.ApiKeyCredential("local-foundry-key"),
                 new OpenAIClientOptions { Endpoint = new Uri(localEndpoint) }
             );
-            _localClient = localOpenAi.GetChatClient(_options.LocalModelId).AsIChatClient();
+            _localClient = localOpenAi.GetChatClient(_activeLocalModelId).AsIChatClient();
         }
         catch
         {
@@ -89,17 +99,71 @@ public class HybridChatClientRouter : IChatClient
             string endpoint = _options.GetEffectiveLocalEndpoint();
             var baseUri = new Uri(endpoint);
             var healthUrl = $"{baseUri.Scheme}://{baseUri.Authority}/v1/models";
-            var resp = await _httpClient.GetAsync(healthUrl, cts.Token);
-            if (resp.IsSuccessStatusCode && _localClient == null)
+            using var resp = await _httpClient.GetAsync(healthUrl, cts.Token);
+            if (!resp.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var modelListJson = await resp.Content.ReadAsStringAsync(cts.Token);
+            bool modelChanged = await RefreshActiveModelAsync(baseUri, modelListJson, cts.Token);
+            if (modelChanged || _localClient == null)
             {
                 InitializeClients();
             }
-            return resp.IsSuccessStatusCode;
+            return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Whether a request of <paramref name="estimatedTokens"/> would be escalated to the cloud model.
+    /// Callers use this to skip local-only strategies (such as splitting a long document into parts)
+    /// when the large-context cloud model will receive the request anyway.
+    /// </summary>
+    public bool WouldEscalateToCloud(int estimatedTokens) =>
+        !_options.PrivacyMode &&
+        _options.EscalateOnComplexity &&
+        estimatedTokens > _options.EscalationTokenThreshold &&
+        _cloudClient != null;
+
+    /// <summary>
+    /// Re-evaluates which local model to use from the endpoint's model listing.
+    /// </summary>
+    /// <returns>True when the active model changed and the local client must be rebuilt.</returns>
+    private async Task<bool> RefreshActiveModelAsync(Uri baseUri, string modelListJson, CancellationToken cancellationToken)
+    {
+        if (!_options.Local.AutoSelectModel)
+        {
+            return false;
+        }
+
+        // Prefer models already loaded in memory; fall back to everything the endpoint lists.
+        var candidates = await _modelCatalog.GetLoadedModelIdsAsync(baseUri, cancellationToken);
+        if (candidates.Count == 0)
+        {
+            try
+            {
+                candidates = LocalModelCatalog.ParseModelIds(modelListJson);
+            }
+            catch (System.Text.Json.JsonException ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[HybridChatClientRouter] Unreadable /v1/models payload; keeping model '{_activeLocalModelId}': {ex.Message}");
+                return false;
+            }
+        }
+
+        var selected = LocalModelSelector.Select(candidates, _options.Local.GetPreferredModels(), _options.LocalModelId);
+        if (string.Equals(selected, _activeLocalModelId, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        _activeLocalModelId = selected;
+        return true;
     }
 
     public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
@@ -117,7 +181,7 @@ public class HybridChatClientRouter : IChatClient
         }
         catch (Exception ex) when (targetClient != _fallbackClient)
         {
-            LastRoutingDecision = (LastRoutingDecision ?? new RoutingDecisionInfo("Fallback", _options.LocalEndpoint, _options.LocalModelId, true, true, 0, 0, "")) with
+            LastRoutingDecision = (LastRoutingDecision ?? new RoutingDecisionInfo("Fallback", _options.LocalEndpoint, ActiveLocalModelId, true, true, 0, 0, "")) with
             {
                 RouteName = "Local Offline Fallback",
                 Rationale = $"Primary endpoint failed ({ex.Message}). Answered by the offline demo engine (output is not derived from the document)."
@@ -195,7 +259,7 @@ public class HybridChatClientRouter : IChatClient
             LastRoutingDecision = new RoutingDecisionInfo(
                 RouteName: isDaemonUp ? "Microsoft Foundry Local (Active Daemon)" : "Microsoft Foundry Local (Offline Fallback)",
                 Endpoint: _options.LocalEndpoint,
-                ModelId: _options.LocalModelId,
+                ModelId: ActiveLocalModelId,
                 IsLocal: true,
                 IsPrivacyEnforced: true,
                 EstimatedTokens: estimatedTokens,
@@ -206,7 +270,7 @@ public class HybridChatClientRouter : IChatClient
             return client;
         }
 
-        if (_options.EscalateOnComplexity && estimatedTokens > _options.EscalationTokenThreshold && _cloudClient != null)
+        if (WouldEscalateToCloud(estimatedTokens))
         {
             decimal cost = Math.Round((decimal)(estimatedTokens * 0.000005 + 500 * 0.000015), 4);
             LastRoutingDecision = new RoutingDecisionInfo(
@@ -229,7 +293,7 @@ public class HybridChatClientRouter : IChatClient
         LastRoutingDecision = new RoutingDecisionInfo(
             RouteName: daemonActive ? "Local Foundry ($0.00)" : "Local Offline Engine ($0.00)",
             Endpoint: _options.LocalEndpoint,
-            ModelId: _options.LocalModelId,
+            ModelId: ActiveLocalModelId,
             IsLocal: true,
             IsPrivacyEnforced: false,
             EstimatedTokens: estimatedTokens,

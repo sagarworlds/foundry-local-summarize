@@ -7,6 +7,7 @@ using FoundrySummarizer.Core.Grounding;
 using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
+using FoundrySummarizer.Core.Summarization;
 using FoundrySummarizer.Wpf.ViewModels;
 
 namespace FoundrySummarizer.Wpf;
@@ -51,6 +52,10 @@ public partial class App : Application
         services.AddSingleton<IPromptyEngine, PromptyEngine>();
         services.AddSingleton<IVectorGroundingService, VectorGroundingService>();
         services.AddSingleton<IEvaluationPipeline, EvaluationPipeline>();
+        services.AddSingleton<IDocumentSummarizer>(sp => new MultiPartSummarizer(
+            sp.GetRequiredService<HybridChatClientRouter>(),
+            sp.GetRequiredService<IPromptyEngine>(),
+            foundryOptions.Summarization));
 
         // Register ViewModels and MainWindow
         services.AddSingleton<MainViewModel>();

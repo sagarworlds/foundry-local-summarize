@@ -7,6 +7,7 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Evaluation;
+using FoundrySummarizer.Core.Summarization;
 
 namespace FoundrySummarizer.Wpf.ViewModels;
 
@@ -69,14 +70,15 @@ public partial class MainViewModel : ObservableObject
         IDocumentIngestionPipeline ingestionPipeline,
         IPromptyEngine promptyEngine,
         IVectorGroundingService groundingService,
-        IEvaluationPipeline evaluationPipeline)
+        IEvaluationPipeline evaluationPipeline,
+        IDocumentSummarizer summarizer)
     {
         _foundryOptions = options;
         _router = router;
         _isPrivacyMode = options.PrivacyMode;
 
         IngestionVm = new IngestionViewModel(ingestionPipeline);
-        SummarizerVm = new SummarizerViewModel(promptyEngine, router, groundingService);
+        SummarizerVm = new SummarizerViewModel(promptyEngine, router, groundingService, summarizer);
         GroundingVm = new GroundingViewModel(groundingService);
         AgenticVm = new AgenticViewModel(router);
         ChatVm = new ChatViewModel(router);
@@ -127,12 +129,12 @@ public partial class MainViewModel : ObservableObject
             if (IsPrivacyMode)
             {
                 DaemonStatusText = online
-                    ? $"Foundry Local: Active ({_foundryOptions.LocalEndpoint})"
+                    ? $"Foundry Local: Active ({_foundryOptions.LocalEndpoint}, model: {_router.ActiveLocalModelId})"
                     : $"Foundry Local: Offline Mode Ready ({_foundryOptions.LocalModelId})";
             }
             else
             {
-                DaemonStatusText = $"☁️ Hybrid Mode ({_foundryOptions.CloudModelId} / {_foundryOptions.LocalModelId})";
+                DaemonStatusText = $"☁️ Hybrid Mode ({_foundryOptions.CloudModelId} / {_router.ActiveLocalModelId})";
             }
         });
     }

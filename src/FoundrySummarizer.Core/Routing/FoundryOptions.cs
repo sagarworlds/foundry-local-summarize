@@ -19,6 +19,49 @@ public class LocalFoundryConfig
 
     public int TimeoutSeconds { get; set; } = 15;
     public string Provider { get; set; } = "FoundryLocal";
+
+    /// <summary>
+    /// When true, the router lists the models the local endpoint serves and uses the first match from
+    /// <see cref="GetPreferredModels"/>, falling back to <see cref="ModelId"/>. Sub-1B models are too
+    /// small to follow a structured summary template faithfully, so a stronger model is used when present.
+    /// </summary>
+    public bool AutoSelectModel { get; set; } = true;
+
+    /// <summary>
+    /// Ordered model aliases to prefer (best first). Each entry matches a served model id exactly or as a
+    /// prefix, e.g. "phi-4-mini" matches "phi-4-mini-instruct-generic-gpu". Empty means use the built-in list.
+    /// An array (not a List) so configuration binding replaces rather than appends to the defaults.
+    /// </summary>
+    public string[] PreferredModels { get; set; } = Array.Empty<string>();
+
+    /// <summary>Returns <see cref="PreferredModels"/> if configured, otherwise the built-in preference order.</summary>
+    public IReadOnlyList<string> GetPreferredModels() =>
+        PreferredModels is { Length: > 0 } ? PreferredModels : LocalModelSelector.DefaultPreferences;
+}
+
+/// <summary>
+/// Budgets for splitting long documents into parts before summarizing. Values are estimated tokens
+/// (≈4 characters each) and should leave room for the prompt and the answer in the model's context window.
+/// </summary>
+public class SummarizationConfig
+{
+    /// <summary>Documents up to this size are summarized in a single model call.</summary>
+    public int MaxSinglePassTokens { get; set; } = 2500;
+
+    /// <summary>Size of each part when a document is too long for a single pass.</summary>
+    public int MapChunkTokens { get; set; } = 1200;
+
+    /// <summary>Overlap between consecutive parts so facts that straddle a boundary are not lost.</summary>
+    public int MapChunkOverlapTokens { get; set; } = 60;
+
+    /// <summary>Output budget for the notes extracted from each part.</summary>
+    public int MapMaxOutputTokens { get; set; } = 450;
+
+    /// <summary>
+    /// Maximum passes of note-taking. If the combined notes are still over <see cref="MaxSinglePassTokens"/>,
+    /// the notes themselves are condensed again, up to this many passes.
+    /// </summary>
+    public int MaxCondenseRounds { get; set; } = 3;
 }
 
 public class CloudFoundryConfig
@@ -39,6 +82,7 @@ public class FoundryOptions
 
     public LocalFoundryConfig Local { get; set; } = new();
     public CloudFoundryConfig Cloud { get; set; } = new();
+    public SummarizationConfig Summarization { get; set; } = new();
 
     public string GetEffectiveLocalEndpoint()
     {
