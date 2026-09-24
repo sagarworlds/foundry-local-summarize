@@ -3,7 +3,7 @@ name: Build and Release Installer
 on:
   push:
     tags:
-      - 'v*' # Triggers on version tags such as v2.0.0
+      - 'v*' # Triggers on version tags such as v2.0.1
 
 jobs:
   build-and-release:
