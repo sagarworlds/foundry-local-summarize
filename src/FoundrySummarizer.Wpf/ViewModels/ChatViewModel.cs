@@ -42,8 +42,15 @@ public record ChatMessageItem(ChatSender Sender, string Text, DateTime Timestamp
 public partial class ChatViewModel : ObservableObject
 {
     private readonly DocumentChatAgent _agent;
+    private readonly IFollowUpQuestionGenerator _questionGenerator;
     private readonly IModelReadiness _modelReadiness;
     private readonly IActivityTracker _activity;
+
+    // Cancels suggestion generation for a document or summary that has since been replaced.
+    private CancellationTokenSource? _suggestionCts;
+    private string _documentText = string.Empty;
+
+    private const string SuggestionsHint = "Summarize the document to get suggested questions about it, or type your own.";
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendMessageCommand))]
@@ -64,21 +71,25 @@ public partial class ChatViewModel : ObservableObject
     /// <summary>The conversation, oldest first.</summary>
     public ObservableCollection<ChatMessageItem> Messages { get; } = new();
 
-    /// <summary>Questions that work for most documents, offered as one-click prompts.</summary>
-    public IReadOnlyList<string> SuggestedQuestions { get; } = new[]
-    {
-        "What are the key decisions?",
-        "Who is responsible for what, and by when?",
-        "What figures and amounts are mentioned?",
-        "What risks or open issues are raised?"
-    };
+    /// <summary>One-click questions written by the model for the loaded document (empty until a summary exists).</summary>
+    public ObservableCollection<string> SuggestedQuestions { get; } = new();
+
+    /// <summary>Why there are no suggestions yet, or that they are being written; empty when suggestions are shown.</summary>
+    [ObservableProperty]
+    private string _suggestionsStatus = string.Empty;
+
+    /// <summary>True while the model is writing suggestions.</summary>
+    [ObservableProperty]
+    private bool _isSuggesting;
 
     /// <param name="agent">Answers questions about the document.</param>
+    /// <param name="questionGenerator">Writes the suggested questions for each document.</param>
     /// <param name="modelReadiness">Questions are disabled until a model is loaded.</param>
-    /// <param name="activity">Marks a running answer, so the model is not switched meanwhile.</param>
-    public ChatViewModel(DocumentChatAgent agent, IModelReadiness modelReadiness, IActivityTracker activity)
+    /// <param name="activity">Marks running model work, so the model is not switched meanwhile.</param>
+    public ChatViewModel(DocumentChatAgent agent, IFollowUpQuestionGenerator questionGenerator, IModelReadiness modelReadiness, IActivityTracker activity)
     {
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
+        _questionGenerator = questionGenerator ?? throw new ArgumentNullException(nameof(questionGenerator));
         _modelReadiness = modelReadiness;
         _activity = activity;
         _modelReadiness.ReadinessChanged += (_, _) =>
@@ -96,7 +107,14 @@ public partial class ChatViewModel : ObservableObject
     {
         _agent.InitializeSession(documentName, documentText, summaryText: string.Empty);
         DocumentName = documentName;
+        _documentText = documentText;
         HasDocument = true;
+
+        // The previous document's suggestions no longer apply; new ones are written once this one is summarized.
+        _suggestionCts?.Cancel();
+        SuggestedQuestions.Clear();
+        IsSuggesting = false;
+        SuggestionsStatus = SuggestionsHint;
         Messages.Clear();
         Messages.Add(Notice($"Ask anything about '{documentName}'. Answers come only from the document and cite the passages used as [P#]."));
     }
@@ -107,6 +125,42 @@ public partial class ChatViewModel : ObservableObject
     {
         if (!HasDocument) return;
         _agent.UpdateSummary(summary);
+        _ = RefreshSuggestionsAsync(summary);
+    }
+
+    /// <summary>
+    /// Asks the model for questions about this document, based on its summary. Runs after each summary, so the
+    /// suggestions follow the document and the summary style; a newer document or summary cancels this run.
+    /// </summary>
+    private async Task RefreshSuggestionsAsync(string summary)
+    {
+        _suggestionCts?.Cancel();
+        var cts = _suggestionCts = new CancellationTokenSource();
+
+        SuggestedQuestions.Clear();
+        IsSuggesting = true;
+        SuggestionsStatus = "Writing suggested questions about this document...";
+        try
+        {
+            using var busy = _activity.Begin();
+            var questions = await _questionGenerator.SuggestAsync(DocumentName, summary, _documentText, cts.Token);
+            if (cts.IsCancellationRequested) return;
+
+            foreach (var question in questions) SuggestedQuestions.Add(question);
+            SuggestionsStatus = questions.Count == 0 ? "The model did not suggest any questions. Type your own below." : string.Empty;
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Replaced by a newer document or summary, which shows its own suggestions.
+        }
+        catch (LocalModelUnavailableException ex)
+        {
+            if (!cts.IsCancellationRequested) SuggestionsStatus = $"Could not suggest questions: {ex.Message}";
+        }
+        finally
+        {
+            if (!cts.IsCancellationRequested) IsSuggesting = false;
+        }
     }
 
     private bool CanAsk() => HasDocument && !IsThinking && _modelReadiness.IsModelReady;

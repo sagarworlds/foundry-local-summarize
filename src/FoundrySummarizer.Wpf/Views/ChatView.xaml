@@ -30,9 +30,14 @@
             </StackPanel>
         </DockPanel>
 
-        <!-- Suggested questions -->
-        <WrapPanel Grid.Row="1" Margin="0,0,0,12" Visibility="{Binding HasDocument, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="Try:" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,8,0" />
+        <!-- Suggested questions, written by the model for this document after it is summarized -->
+        <StackPanel Grid.Row="1" Margin="0,0,0,12" Visibility="{Binding HasDocument, Converter={StaticResource BoolToVis}}">
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                <ProgressBar IsIndeterminate="True" Width="50" Height="4" Margin="0,0,8,0" VerticalAlignment="Center"
+                             Foreground="{StaticResource AccentPrimaryBrush}" Background="{StaticResource BorderBrush}"
+                             Visibility="{Binding IsSuggesting, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="{Binding SuggestionsStatus}" Style="{StaticResource MutedText}" TextWrapping="Wrap" />
+            </StackPanel>
             <ItemsControl ItemsSource="{Binding SuggestedQuestions}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
@@ -47,7 +52,7 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
-        </WrapPanel>
+        </StackPanel>
 
         <!-- Conversation -->
         <Border Grid.Row="2" Style="{StaticResource ModernCard}" Margin="0,0,0,12">

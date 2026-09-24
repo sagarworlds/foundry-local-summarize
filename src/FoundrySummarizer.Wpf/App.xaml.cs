@@ -40,6 +40,8 @@ public partial class App : Application
             sp.GetRequiredService<FoundryLocalChatClient>(),
             config: sp.GetRequiredService<ChatConfig>()));
 
+        services.AddSingleton<IFollowUpQuestionGenerator>(sp => new FollowUpQuestionGenerator(sp.GetRequiredService<FoundryLocalChatClient>()));
+
         services.AddSingleton<IDocumentPicker, OpenFileDocumentPicker>();
         services.AddSingleton<IClipboardService, WpfClipboardService>();
         services.AddSingleton<IUserSettingsStore, JsonUserSettingsStore>();
