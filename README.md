@@ -1,5 +1,6 @@
 # Foundry Local Summarizer
 
+[![CI](https://github.com/sagarworlds/foundry-local-summarize/actions/workflows/ci.yml/badge.svg)](https://github.com/sagarworlds/foundry-local-summarize/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/sagarworlds/foundry-local-summarize?label=release)](https://github.com/sagarworlds/foundry-local-summarize/releases/latest)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)](https://learn.microsoft.com/dotnet/desktop/wpf/)
@@ -206,7 +207,8 @@ the detected Foundry Local version.
 
 The desktop application follows the MVVM pattern (CommunityToolkit.Mvvm) with dependency injection
 (Microsoft.Extensions.DependencyInjection) and uses [Microsoft.Extensions.AI](https://learn.microsoft.com/dotnet/ai/microsoft-extensions-ai)
-for model access.
+for model access. The view models live in a separate, WPF-free library (`FoundrySummarizer.Presentation`) and depend only
+on interfaces, so the screen behaviour is unit-tested like the rest of the code.
 
 ## Troubleshooting
 
@@ -249,9 +251,19 @@ Alternatively, open `FoundrySummarizer.slnx` in Visual Studio and press **F5**. 
 dotnet test tests/FoundrySummarizer.Tests/FoundrySummarizer.Tests.csproj
 ```
 
-The tests do not require a running model; model and service calls use in-process fakes. They cover text extraction,
-summarization, chat retrieval, suggested questions, prompt rendering, reasoning-output handling, model selection, and
-Foundry Local discovery, loading and version detection.
+The tests do not require Foundry Local or a model: the server, the `foundry` CLI and the model are replaced by
+in-process fakes, and the suite runs in a few seconds. It covers:
+
+| Area | Scenarios |
+|---|---|
+| Documents | Word (including tables), PowerPoint (including speaker notes), PDF and text extraction; corrupt, missing, empty and unsupported files; chunking of long lines and unbroken text |
+| Summaries | Single-pass and multi-part summaries, summary styles, prompt rendering, removal of `<think>` reasoning |
+| Chat | Passage retrieval and citations, conversation history, suggested questions, edge cases (no matching passage, blank question) |
+| Foundry Local | Discovery and start (1.x+ and 0.x CLIs), version detection, model listing, loading, unloading and load confirmation, reload after idle unload, port changes, Ollama-style servers |
+| Failures | Unreachable or stopped service, failed start, unknown or undownloaded models, load errors and timeouts, unreadable responses, request errors |
+| Screens | Summarize tab, Chat tab, model selector (startup, switching, remembered model, loading state, recovery from outages) and main-window wiring |
+
+Every push and pull request is built and tested by the [CI workflow](.github/workflows/ci.yml).
 
 ### Build the installer
 
@@ -283,15 +295,17 @@ The installer is written to `installer\Output\` and is not committed to source c
 │   │   ├── Summarization/               Single-pass and multi-part summarization
 │   │   ├── Chat/                        Chat agent, passage retrieval, suggested questions
 │   │   └── Routing/                     Model client, service discovery, model management
+│   ├── FoundrySummarizer.Presentation/  View models and UI service interfaces (no WPF dependency)
+│   │   ├── ViewModels/                  Summarizer, chat, model selector and main window
+│   │   └── Services/                    User settings, model readiness, activity tracking, picker/clipboard interfaces
 │   └── FoundrySummarizer.Wpf/           WPF desktop application
-│       ├── ViewModels/                  Summarizer, chat, model selector and main window
 │       ├── Views/                       Summarize and Chat tabs
-│       └── Services/                    File picker, clipboard, user settings, model readiness
+│       └── Services/                    Windows file picker and clipboard
 ├── tests/FoundrySummarizer.Tests/       xUnit tests
 ├── samples/                             Sample documents
 ├── installer/setup.iss                  Inno Setup script
 ├── build_installer.ps1                  Local installer build script
-└── .github/workflows/release.yml        Release workflow
+└── .github/workflows/                   CI (build and test) and release workflows
 ```
 
 ## License

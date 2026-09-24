@@ -7,8 +7,9 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Presentation.Services;
 using FoundrySummarizer.Wpf.Services;
-using FoundrySummarizer.Wpf.ViewModels;
+using FoundrySummarizer.Presentation.ViewModels;
 
 namespace FoundrySummarizer.Wpf;
 

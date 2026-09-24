@@ -22,7 +22,7 @@ jobs:
 
       - name: Run Tests
         # A release must never ship code that fails its own tests.
-        run: dotnet test tests/FoundrySummarizer.Tests/FoundrySummarizer.Tests.csproj -c Release
+        run: dotnet test tests/FoundrySummarizer.Tests/FoundrySummarizer.Tests.csproj -c Release --blame-hang-timeout 2m
 
       - name: Publish WPF Application
         run: |

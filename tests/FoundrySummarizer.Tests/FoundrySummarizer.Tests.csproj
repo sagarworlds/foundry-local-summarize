@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FoundrySummarizer.Core\FoundrySummarizer.Core.csproj" />
+    <ProjectReference Include="..\..\src\FoundrySummarizer.Presentation\FoundrySummarizer.Presentation.csproj" />
   </ItemGroup>
 
 </Project>

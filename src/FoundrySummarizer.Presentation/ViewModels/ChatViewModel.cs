@@ -3,9 +3,9 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FoundrySummarizer.Core.Chat;
 using FoundrySummarizer.Core.Routing;
-using FoundrySummarizer.Wpf.Services;
+using FoundrySummarizer.Presentation.Services;
 
-namespace FoundrySummarizer.Wpf.ViewModels;
+namespace FoundrySummarizer.Presentation.ViewModels;
 
 /// <summary>Who wrote a chat message; decides how it is displayed.</summary>
 public enum ChatSender

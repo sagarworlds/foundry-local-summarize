@@ -6,9 +6,9 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
-using FoundrySummarizer.Wpf.Services;
+using FoundrySummarizer.Presentation.Services;
 
-namespace FoundrySummarizer.Wpf.ViewModels;
+namespace FoundrySummarizer.Presentation.ViewModels;
 
 /// <summary>
 /// The summarize screen: open a document, pick a summary style, generate the summary with the local model.
@@ -173,9 +173,22 @@ public partial class SummarizerViewModel : ObservableObject
         SetStatus($"Summarizing with {SelectedPersona.Name}...");
         try
         {
-            // Progress<T> captures the UI synchronization context, so status updates are marshalled safely.
-            var progress = new Progress<string>(message => SetStatus(message));
-            var result = await _summarizer.SummarizeAsync(new SummarizationRequest(SelectedPersona, DocumentText), progress, cancellationToken);
+            // Progress<T> posts each report to the UI synchronization context, so a report can arrive after the summary
+            // has finished; the flag stops such a late "Reading part…" from overwriting the final status.
+            var inProgress = true;
+            var progress = new Progress<string>(message =>
+            {
+                if (Volatile.Read(ref inProgress)) SetStatus(message);
+            });
+            SummarizationResult result;
+            try
+            {
+                result = await _summarizer.SummarizeAsync(new SummarizationRequest(SelectedPersona, DocumentText), progress, cancellationToken);
+            }
+            finally
+            {
+                Volatile.Write(ref inProgress, false);
+            }
 
             Summary = result.Summary;
             SetStatus(result.UsedMultiPart

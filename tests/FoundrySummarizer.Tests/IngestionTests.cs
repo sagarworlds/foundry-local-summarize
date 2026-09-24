@@ -4,6 +4,7 @@ using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using DocumentFormat.OpenXml.Presentation;
 using A = DocumentFormat.OpenXml.Drawing;
+using PptPresentation = DocumentFormat.OpenXml.Presentation.Presentation;
 using FoundrySummarizer.Core.Ingestion;
 
 namespace FoundrySummarizer.Tests;
@@ -71,7 +72,7 @@ public class IngestionTests
         using (var presDoc = PresentationDocument.Create(pptxPath, PresentationDocumentType.Presentation))
         {
             var presPart = presDoc.AddPresentationPart();
-            presPart.Presentation = new Presentation();
+            presPart.Presentation = new PptPresentation();
 
             var slidePart = presPart.AddNewPart<SlidePart>();
             slidePart.Slide = new Slide(new CommonSlideData(new ShapeTree(

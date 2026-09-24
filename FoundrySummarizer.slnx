@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FoundrySummarizer.Core/FoundrySummarizer.Core.csproj" />
+    <Project Path="src/FoundrySummarizer.Presentation/FoundrySummarizer.Presentation.csproj" />
     <Project Path="src/FoundrySummarizer.Wpf/FoundrySummarizer.Wpf.csproj" />
   </Folder>
   <Folder Name="/tests/">

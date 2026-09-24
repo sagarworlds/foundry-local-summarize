@@ -1,7 +1,7 @@
 using System.IO;
 using System.Text.Json;
 
-namespace FoundrySummarizer.Wpf.Services;
+namespace FoundrySummarizer.Presentation.Services;
 
 /// <summary>Choices the user makes in the app that should survive a restart.</summary>
 public record UserSettings
@@ -24,8 +24,13 @@ public interface IUserSettingsStore
 /// <summary>Keeps user settings in %LOCALAPPDATA%\FoundrySummarizer\user-settings.json (appsettings.json stays read-only).</summary>
 public sealed class JsonUserSettingsStore : IUserSettingsStore
 {
-    private readonly string _path = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FoundrySummarizer", "user-settings.json");
+    private readonly string _path;
+
+    /// <param name="path">Settings file; defaults to %LOCALAPPDATA%\FoundrySummarizer\user-settings.json.</param>
+    public JsonUserSettingsStore(string? path = null)
+    {
+        _path = path ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FoundrySummarizer", "user-settings.json");
+    }
 
     /// <inheritdoc />
     public UserSettings Load()
