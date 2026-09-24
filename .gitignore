@@ -72,3 +72,6 @@ secrets.json
 *.crash
 *.stackdump
 *.trace
+
+## Benchmark output (see tools/FoundrySummarizer.Benchmark)
+benchmark-results/

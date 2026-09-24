@@ -136,7 +136,7 @@ public partial class SummarizerViewModel : ObservableObject
             var result = await _summarizer.SummarizeAsync(request, progress);
 
             GeneratedSummary = result.Summary;
-            LastReferenceText = string.Join("\n\n", activeDoc.SystemPrompt, activeDoc.UserPromptTemplate, groundingContext);
+            LastReferenceText = activeDoc.BuildReferenceText(groundingContext);
             var route = LastRoutingInfo?.RouteName ?? "Foundry Local";
             GenerationStatus = result.UsedMultiPart
                 ? $"Summary generated from {result.PartCount} document parts via {route}"

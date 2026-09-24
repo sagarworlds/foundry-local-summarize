@@ -29,6 +29,7 @@
 - [WPF Desktop User Experience](#-wpf-desktop-user-experience)
 - [Getting Started](#-getting-started)
 - [Running Automated Tests](#-running-automated-tests)
+- [Benchmarking Summary Quality](#-benchmarking-summary-quality)
 - [Sample Documents Included](#-sample-documents-included)
 - [Repository Structure](#-repository-structure)
 - [Documentation Links](#-documentation-links)
@@ -176,18 +177,32 @@ Or open `FoundrySummarizer.sln` in Visual Studio 2022 / 2026 and press **F5**.
 
 ## 🧪 Running Automated Tests
 
-The solution includes 23 automated unit and integration tests covering all six architectural pillars:
+The solution includes 95 automated unit and integration tests covering all six architectural pillars and the benchmark tool. Apart from the one integration test below, none need a model: model calls use scripted fake clients.
 
 ```powershell
 dotnet test
 ```
 
-```
-Test run for .../FoundrySummarizer.Tests.dll (.NETCoreApp,Version=v10.0)
-A total of 1 test files matched the specified pattern.
+`ConfigurationTests.HybridRouter_PingsLiveFoundryDaemon` is an integration test that passes only while Foundry Local is running on the machine.
 
-Passed!  - Failed: 0, Passed: 23, Skipped: 0, Total: 23, Duration: 632 ms
+## 📊 Benchmarking Summary Quality
+
+`tools/FoundrySummarizer.Benchmark` summarizes every document in `samples/` with every persona on one or more models, then scores each summary with the evaluation pipeline (fact-checked grounding, completeness, persona format). Use it to pick a model or to check that a prompt change actually helps. It calls the model endpoint directly, so an unreachable model is reported as an error rather than replaced by the offline demo output.
+
+```powershell
+# Compare two Foundry Local models (aliases are resolved to the served model ids)
+dotnet run --project tools/FoundrySummarizer.Benchmark -- --models phi-4-mini,qwen2.5-7b --runs 2
+
+# Re-test one persona after editing its prompt, with a note for the history file
+dotnet run --project tools/FoundrySummarizer.Benchmark -- --personas "Legal Compliance Check" --label "stricter legal prompt"
 ```
+
+Each run writes to `benchmark-results/` (git-ignored):
+- `benchmark-<timestamp>.md`: per-model scorecard, per-case results, every unverified claim and any errors.
+- `benchmark-<timestamp>.csv`: one row per case, including the generated summary.
+- `history.csv`: one row per model per run, appended over time to track quality as models and prompts change.
+
+Run `--help` for all options (`--endpoint`, `--samples`, `--timeout`, `--out`). Exit code 0 means at least one summary succeeded, 1 means all failed, and 2 means bad arguments or an unreachable endpoint.
 
 ---
 

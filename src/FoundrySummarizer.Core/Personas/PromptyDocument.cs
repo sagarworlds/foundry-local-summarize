@@ -33,6 +33,14 @@ public record PromptyDocument
         MaxOutputTokens = ModelConfig.MaxTokens
     };
 
+    /// <summary>
+    /// Everything besides the document that the model was given for a summary: the persona's prompts and the
+    /// policy grounding block. The grounding evaluator treats facts found here as legitimately quotable.
+    /// </summary>
+    /// <param name="groundingContext">The policy block sent with the summary request; may be empty.</param>
+    public string BuildReferenceText(string? groundingContext) =>
+        string.Join("\n\n", SystemPrompt, UserPromptTemplate, groundingContext ?? string.Empty);
+
     public string RenderUserPrompt(IReadOnlyDictionary<string, string> variables) =>
         RenderTemplate(UserPromptTemplate, variables);
 
