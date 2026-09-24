@@ -63,7 +63,7 @@ public partial class App : Application
         mainWindow.Show();
     }
 
-    /// <summary>appsettings(.{environment}).json next to the executable, then the repository root copy (for development), then environment variables.</summary>
+    /// <summary>appsettings(.{environment}).json next to the executable, then the project folder copy (when running from source), then environment variables.</summary>
     private static IConfiguration BuildConfiguration()
     {
         var baseDir = AppContext.BaseDirectory;
@@ -72,10 +72,10 @@ public partial class App : Application
             .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
             .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production"}.json", optional: true);
 
-        var repoRootConfig = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "appsettings.json"));
-        if (File.Exists(repoRootConfig))
+        var projectConfig = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "appsettings.json"));
+        if (File.Exists(projectConfig))
         {
-            builder.AddJsonFile(repoRootConfig, optional: true, reloadOnChange: true);
+            builder.AddJsonFile(projectConfig, optional: true, reloadOnChange: true);
         }
 
         return builder.AddEnvironmentVariables().Build();

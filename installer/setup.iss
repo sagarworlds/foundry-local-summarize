@@ -1,6 +1,6 @@
 #define MyAppName "Foundry Summarizer"
 #define MyAppVersion "2.0.0"
-#define MyAppPublisher "Enterprise AI"
+#define MyAppPublisher "Foundry Local Summarizer"
 #define MyAppExeName "FoundrySummarizer.Wpf.exe"
 #define BuildDir "..\src\FoundrySummarizer.Wpf\bin\Release\net10.0-windows\win-x64\publish"
 
