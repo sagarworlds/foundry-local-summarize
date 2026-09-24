@@ -72,6 +72,22 @@ public class CloudFoundryConfig
     public string Provider { get; set; } = "AzureAIFoundry";
 }
 
+/// <summary>
+/// Context budgets for the interactive document chat, in estimated tokens. Together with the summary and
+/// the answer they must fit the local model's context window.
+/// </summary>
+public class ChatConfig
+{
+    /// <summary>Budget for document passages sent with each question. Smaller documents are sent whole.</summary>
+    public int MaxPassageTokens { get; set; } = 1500;
+
+    /// <summary>Earlier question/answer pairs kept for follow-up questions (older turns are dropped).</summary>
+    public int MaxHistoryTurns { get; set; } = 4;
+
+    /// <summary>Output budget for each answer.</summary>
+    public int MaxAnswerTokens { get; set; } = 500;
+}
+
 public class FoundryOptions
 {
     public const string SectionName = "Foundry";
@@ -83,6 +99,7 @@ public class FoundryOptions
     public LocalFoundryConfig Local { get; set; } = new();
     public CloudFoundryConfig Cloud { get; set; } = new();
     public SummarizationConfig Summarization { get; set; } = new();
+    public ChatConfig Chat { get; set; } = new();
 
     public string GetEffectiveLocalEndpoint()
     {

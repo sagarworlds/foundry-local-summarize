@@ -1,65 +1,156 @@
+using System.Text;
 using Microsoft.Extensions.AI;
+using FoundrySummarizer.Core.Grounding;
+using FoundrySummarizer.Core.Routing;
 
 namespace FoundrySummarizer.Core.Agentic;
 
+/// <summary>
+/// Answers follow-up questions about one document and its summary.
+/// Each question is sent with only the passages relevant to it (retrieved per question), the summary,
+/// and a bounded window of earlier turns. Sending the full document plus the ever-growing conversation
+/// on every turn overflowed small local models' context windows, which then truncated the input and
+/// answered from whatever was left.
+/// </summary>
 public class InteractiveSummaryChatAgent
 {
     private readonly IChatClient _chatClient;
-    private readonly List<ChatMessage> _chatHistory = new();
-    private string _currentDocument = string.Empty;
-    private string _currentSummary = string.Empty;
+    private readonly IPassageRetriever _retriever;
+    private readonly ChatConfig _config;
 
-    public IReadOnlyList<ChatMessage> ChatHistory => _chatHistory;
+    // Earlier turns are stored as bare question/answer pairs; their passages are not replayed,
+    // because each new question retrieves its own evidence.
+    private readonly List<ChatMessage> _turns = new();
+    private ChatMessage? _systemMessage;
+    private string? _previousQuestion;
 
-    public InteractiveSummaryChatAgent(IChatClient chatClient)
+    /// <summary>The system prompt followed by the retained question/answer turns.</summary>
+    public IReadOnlyList<ChatMessage> ChatHistory =>
+        _systemMessage is null ? _turns : new[] { _systemMessage }.Concat(_turns).ToList();
+
+    /// <summary>Passages sent with the most recent question, for display or debugging.</summary>
+    public IReadOnlyList<RetrievedPassage> LastRetrievedPassages { get; private set; } = Array.Empty<RetrievedPassage>();
+
+    /// <param name="chatClient">Model client (normally the hybrid router).</param>
+    /// <param name="retriever">Passage retriever; defaults to BM25 over ~250-token passages.</param>
+    /// <param name="config">Context budgets; defaults suit 4K-context local models.</param>
+    public InteractiveSummaryChatAgent(IChatClient chatClient, IPassageRetriever? retriever = null, ChatConfig? config = null)
     {
-        _chatClient = chatClient;
+        _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
+        _retriever = retriever ?? new Bm25PassageRetriever();
+        _config = config ?? new ChatConfig();
     }
 
+    /// <summary>Starts a new conversation about <paramref name="documentText"/>, discarding earlier turns.</summary>
+    /// <param name="documentName">Shown to the model so it can refer to the document by name.</param>
+    /// <param name="documentText">Full document text; indexed into numbered passages.</param>
+    /// <param name="summaryText">The generated summary, or empty if none exists yet.</param>
     public void InitializeSession(string documentName, string documentText, string summaryText)
     {
-        _currentDocument = documentText;
-        _currentSummary = summaryText;
-        _chatHistory.Clear();
+        _turns.Clear();
+        _previousQuestion = null;
+        LastRetrievedPassages = Array.Empty<RetrievedPassage>();
+        _retriever.Index(documentText ?? string.Empty);
 
+        var summary = string.IsNullOrWhiteSpace(summaryText) ? "(No summary has been generated yet.)" : summaryText.Trim();
         var systemPrompt = $"""
-        You are an Interactive Document Intelligence Co-Pilot running locally on Microsoft Foundry Local.
-        You have analyzed the document '{documentName}' and produced an initial summary.
+            You are an Interactive Document Intelligence Co-Pilot running locally on Microsoft Foundry Local.
+            You answer questions about the document '{documentName}'.
 
-        CONTEXT:
-        [GENERATED SUMMARY]
-        {_currentSummary}
+            [GENERATED SUMMARY]
+            {summary}
 
-        [ORIGINAL SOURCE DOCUMENT]
-        {_currentDocument}
+            RULES:
+            1. Answer only from the <passages> sent with each question and from the summary above. Passages are exact excerpts of the document; the summary may be incomplete or wrong, so prefer the passages when they differ.
+            2. Cite the passages you used as [P#], for example: "The budget is $150,000 [P2]."
+            3. Quote figures, dates and names exactly as written.
+            4. If the passages and the summary do not contain the answer, reply "The document does not say." and do not guess.
+            5. When asked why a risk was flagged, point to the exact clause or number behind it.
+            6. Be concise and professional.
+            """;
 
-        INSTRUCTIONS:
-        Answer user questions specifically about this summary and document.
-        When asked why a risk was flagged, reference the exact clauses or numbers.
-        If a user asks for clarification on an action item, identify the relevant excerpt from the source document.
-        Maintain professional, concise, and grounded answers.
-        """;
-
-        _chatHistory.Add(new ChatMessage(ChatRole.System, systemPrompt));
+        _systemMessage = new ChatMessage(ChatRole.System, systemPrompt);
     }
 
+    /// <summary>Answers <paramref name="question"/> using retrieved passages and recent turns.</summary>
+    /// <param name="question">The user's question; blank input returns an empty answer.</param>
+    /// <param name="cancellationToken">Cancels the model call.</param>
+    /// <returns>The model's answer.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
     public async Task<string> AskQuestionAsync(string question, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question)) return string.Empty;
+        if (_systemMessage is null)
+        {
+            throw new InvalidOperationException("Load a document before asking questions.");
+        }
 
-        _chatHistory.Add(new ChatMessage(ChatRole.User, question));
+        question = question.Trim();
+        LastRetrievedPassages = _retriever.Retrieve(BuildRetrievalQuery(question), _config.MaxPassageTokens);
 
-        var response = await _chatClient.GetResponseAsync(_chatHistory, new ChatOptions { Temperature = 0.2f }, cancellationToken);
+        var messages = new List<ChatMessage> { _systemMessage };
+        messages.AddRange(_turns);
+        messages.Add(new ChatMessage(ChatRole.User, BuildQuestionPrompt(question, LastRetrievedPassages)));
+
+        var options = new ChatOptions { Temperature = 0.1f, MaxOutputTokens = _config.MaxAnswerTokens };
+        var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
         var answer = response.Text ?? string.Empty;
 
-        _chatHistory.Add(new ChatMessage(ChatRole.Assistant, answer));
+        RememberTurn(question, answer);
+        _previousQuestion = question;
         return answer;
     }
 
+    /// <summary>Clears the document, summary and conversation.</summary>
     public void Reset()
     {
-        _chatHistory.Clear();
-        _currentDocument = string.Empty;
-        _currentSummary = string.Empty;
+        _turns.Clear();
+        _systemMessage = null;
+        _previousQuestion = null;
+        LastRetrievedPassages = Array.Empty<RetrievedPassage>();
+        _retriever.Index(string.Empty);
+    }
+
+    /// <summary>
+    /// Follow-ups such as "and when is it due?" carry almost no searchable terms, so the previous
+    /// question is added to the query when the new one has fewer than two content words.
+    /// </summary>
+    private string BuildRetrievalQuery(string question)
+    {
+        int contentTerms = Bm25PassageRetriever.Tokenize(question).Count();
+        return contentTerms < 2 && _previousQuestion is not null
+            ? $"{question} {_previousQuestion}"
+            : question;
+    }
+
+    private static string BuildQuestionPrompt(string question, IReadOnlyList<RetrievedPassage> passages)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<passages>");
+        if (passages.Count == 0)
+        {
+            sb.AppendLine("(No passage of the document matched this question.)");
+        }
+        foreach (var passage in passages)
+        {
+            sb.AppendLine($"[P{passage.Number}] {passage.Text}");
+            sb.AppendLine();
+        }
+        sb.AppendLine("</passages>");
+        sb.AppendLine();
+        sb.Append("Question: ").Append(question);
+        return sb.ToString();
+    }
+
+    private void RememberTurn(string question, string answer)
+    {
+        _turns.Add(new ChatMessage(ChatRole.User, question));
+        _turns.Add(new ChatMessage(ChatRole.Assistant, answer));
+
+        int maxMessages = Math.Max(0, _config.MaxHistoryTurns) * 2;
+        if (_turns.Count > maxMessages)
+        {
+            _turns.RemoveRange(0, _turns.Count - maxMessages);
+        }
     }
 }

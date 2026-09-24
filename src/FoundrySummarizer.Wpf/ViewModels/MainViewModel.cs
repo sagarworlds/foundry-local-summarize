@@ -81,7 +81,7 @@ public partial class MainViewModel : ObservableObject
         SummarizerVm = new SummarizerViewModel(promptyEngine, router, groundingService, summarizer);
         GroundingVm = new GroundingViewModel(groundingService);
         AgenticVm = new AgenticViewModel(router);
-        ChatVm = new ChatViewModel(router);
+        ChatVm = new ChatViewModel(router, options.Chat);
         EvaluationVm = new EvaluationViewModel(evaluationPipeline);
 
         // Sync ingestion events

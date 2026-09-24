@@ -28,9 +28,9 @@ public partial class ChatViewModel : ObservableObject
 
     public ObservableCollection<ChatMessageItem> Messages { get; } = new();
 
-    public ChatViewModel(HybridChatClientRouter router)
+    public ChatViewModel(HybridChatClientRouter router, ChatConfig? chatConfig = null)
     {
-        _chatAgent = new InteractiveSummaryChatAgent(router);
+        _chatAgent = new InteractiveSummaryChatAgent(router, config: chatConfig);
     }
 
     public void InitializeSession(string docName, string docText, string summaryText)
