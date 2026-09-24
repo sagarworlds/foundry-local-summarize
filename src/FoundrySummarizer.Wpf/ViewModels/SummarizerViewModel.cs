@@ -114,7 +114,8 @@ public partial class SummarizerViewModel : ObservableObject
         }
     }
 
-    private bool CanOpenDocument() => !IsLoadingDocument && !GenerateSummaryCommand.IsRunning && !_modelReadiness.IsModelLoading;
+    // Like every other action, opening a document waits until a model is loaded.
+    private bool CanOpenDocument() => !IsLoadingDocument && !GenerateSummaryCommand.IsRunning && _modelReadiness.IsModelReady;
 
     private bool CanGenerateSummary() => HasDocument && _modelReadiness.IsModelReady;
 

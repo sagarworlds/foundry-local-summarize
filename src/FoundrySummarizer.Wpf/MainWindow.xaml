@@ -90,7 +90,7 @@
                 <Button Content="↻ Try Again" Style="{StaticResource SecondaryButton}" Command="{Binding ModelPicker.RefreshModelsCommand}"
                         DockPanel.Dock="Right" Padding="10,4" FontSize="12" />
                 <TextBlock TextWrapping="Wrap" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}" FontSize="12">
-                    <Run Text="No model is loaded, so summarizing and chat are disabled." FontWeight="SemiBold" />
+                    <Run Text="No model is loaded, so the app is disabled until one is." FontWeight="SemiBold" />
                     <Run Text="{Binding ModelPicker.StatusText, Mode=OneWay}" />
                 </TextBlock>
             </DockPanel>

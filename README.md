@@ -49,7 +49,7 @@ Foundry Local starts on a new port every time, so the app runs `foundry service 
 
 ### Choosing the model
 
-The **Model** list in the top-right corner shows every chat model downloaded on your PC, with loaded models marked "● in memory". Pick one (for example `Phi-4-mini-instruct-generic-gpu:5`) and the app unloads the current model, then loads the new one. While a model loads, a "Loading…" overlay covers the app; summarizing and chat stay disabled until a model is loaded, and a red banner explains why if loading fails. The model cannot be switched while a summary or answer is running. Your choice is remembered in `%LOCALAPPDATA%\FoundrySummarizer\user-settings.json`. Click **↻** after downloading a new model.
+The **Model** list in the top-right corner shows every chat model downloaded on your PC, with loaded models marked "● in memory". Pick one (for example `Phi-4-mini-instruct-generic-gpu:5`) and the app unloads the current model, then loads the new one. While a model loads, a "Loading…" overlay covers the app; opening documents, summarizing and chat stay disabled until a model is loaded, and a red banner explains why if loading fails. The model cannot be switched while a summary or answer is running. Your choice is remembered in `%LOCALAPPDATA%\FoundrySummarizer\user-settings.json`. Click **↻** after downloading a new model.
 
 Until you pick one, the app chooses automatically:
 1. The best `Local.PreferredModels` entry that is loaded (default order: `phi-4-mini`, `qwen2.5-7b`, `phi-3.5-mini`, `qwen2.5-1.5b`).
