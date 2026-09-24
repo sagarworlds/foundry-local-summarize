@@ -1,4 +1,6 @@
-﻿namespace FoundrySummarizer.Core.Personas;
+﻿using Microsoft.Extensions.AI;
+
+namespace FoundrySummarizer.Core.Personas;
 
 public record PromptyModelConfig(
     string? Api = "chat",
@@ -18,25 +20,33 @@ public record PromptyDocument
     public string UserPromptTemplate { get; init; } = string.Empty;
     public string RawContent { get; init; } = string.Empty;
 
-    public string RenderUserPrompt(IReadOnlyDictionary<string, string> variables)
+    /// <summary>
+    /// Translates the persona's frontmatter sampling parameters into <see cref="ChatOptions"/>.
+    /// Without this, the endpoint's own defaults apply (often temperature ~0.7-1.0 and a short
+    /// output cap), which makes small local models drift from the source text or truncate sections.
+    /// </summary>
+    /// <returns>Chat options carrying temperature, top-p and the max output token budget.</returns>
+    public ChatOptions ToChatOptions() => new()
     {
-        var rendered = UserPromptTemplate;
-        foreach (var (key, value) in variables)
-        {
-            rendered = rendered.Replace("{{" + key + "}}", value);
-            rendered = rendered.Replace("{{ " + key + " }}", value);
-        }
-        return rendered;
-    }
+        Temperature = (float)ModelConfig.Temperature,
+        TopP = (float)ModelConfig.TopP,
+        MaxOutputTokens = ModelConfig.MaxTokens
+    };
 
-    public string RenderSystemPrompt(IReadOnlyDictionary<string, string> variables)
-    {
-        var rendered = SystemPrompt;
-        foreach (var (key, value) in variables)
-        {
-            rendered = rendered.Replace("{{" + key + "}}", value);
-            rendered = rendered.Replace("{{ " + key + " }}", value);
-        }
-        return rendered;
-    }
+    public string RenderUserPrompt(IReadOnlyDictionary<string, string> variables) =>
+        RenderTemplate(UserPromptTemplate, variables);
+
+    public string RenderSystemPrompt(IReadOnlyDictionary<string, string> variables) =>
+        RenderTemplate(SystemPrompt, variables);
+
+    /// <summary>
+    /// Substitutes <c>{{name}}</c> placeholders in a single pass, so placeholder-like text inside an
+    /// inserted document is never re-scanned and stays exactly as written.
+    /// </summary>
+    private static string RenderTemplate(string template, IReadOnlyDictionary<string, string> variables) =>
+        PlaceholderRegex.Replace(template, m =>
+            variables.TryGetValue(m.Groups[1].Value, out var value) ? value : m.Value);
+
+    private static readonly System.Text.RegularExpressions.Regex PlaceholderRegex =
+        new(@"\{\{\s*(\w+)\s*\}\}", System.Text.RegularExpressions.RegexOptions.Compiled);
 }

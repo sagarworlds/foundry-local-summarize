@@ -111,29 +111,36 @@ public class IngestionTests
     }
 
     [Fact]
-    public async Task AudioTranscriptionService_ParsesMeetingAudio()
+    public async Task Pipeline_ExtractsTextFromSupportedFile()
     {
-        var service = new AudioTranscriptionService();
-        using var stream = new MemoryStream(new byte[1024]);
-        var result = await service.ExtractTextAsync(stream, "meeting.wav");
+        var path = Path.Combine(Path.GetTempPath(), $"minutes-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(path, "Executive Meeting Minutes.\n\nPhase 2 hardware request is $150,000.");
+        try
+        {
+            var result = await new DocumentIngestionPipeline().IngestFileAsync(path);
 
-        Assert.Contains("Meeting Transcript", result);
-        Assert.Contains("David (Engineering)", result);
-        Assert.Contains("$150,000", result);
+            Assert.Equal(Path.GetFileName(path), result.FileName);
+            Assert.Contains("$150,000", result.ExtractedText);
+            Assert.True(result.EstimatedTokens > 0);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]
-    public async Task Pipeline_IngestsAndChunksSeamlessly()
+    public async Task Pipeline_RejectsUnsupportedFormats()
     {
-        var pipeline = new DocumentIngestionPipeline();
-        var result = await pipeline.IngestTextAsync(
-            "Executive Meeting Minutes.\n\nPhase 1 complete. Phase 2 hardware request is $150,000.\n\nAll tasks assigned to David.",
-            "Minutes.txt"
-        );
+        using var stream = new MemoryStream(new byte[16]);
+        await Assert.ThrowsAsync<NotSupportedException>(() => new DocumentIngestionPipeline().IngestAsync(stream, "meeting.wav"));
+    }
 
-        Assert.NotNull(result);
-        Assert.Equal("Minutes.txt", result.FileName);
-        Assert.True(result.Chunks.Count >= 1);
-        Assert.Contains("$150,000", result.ExtractedText);
+    [Fact]
+    public async Task Pipeline_ReportsCorruptFilesAsDocumentReadException()
+    {
+        using var stream = new MemoryStream("this is not a zip package"u8.ToArray());
+        var ex = await Assert.ThrowsAsync<DocumentReadException>(() => new DocumentIngestionPipeline().IngestAsync(stream, "broken.docx"));
+        Assert.Contains("broken.docx", ex.Message);
     }
 }

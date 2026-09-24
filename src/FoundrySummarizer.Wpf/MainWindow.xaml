@@ -4,17 +4,16 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:views="clr-namespace:FoundrySummarizer.Wpf.Views"
-        xmlns:converters="clr-namespace:FoundrySummarizer.Wpf.Converters"
         mc:Ignorable="d"
-        Title="Enterprise AI Summarizer - Microsoft Foundry Local" 
+        Title="Foundry Local Summarizer"
         Height="680" Width="1080"
         MinHeight="540" MinWidth="840"
         WindowStartupLocation="CenterScreen"
+        xmlns:converters="clr-namespace:FoundrySummarizer.Wpf.Converters"
         Background="{StaticResource BgPrimaryBrush}">
 
     <Window.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
-        <converters:StatusToBrushConverter x:Key="StatusBrush" />
     </Window.Resources>
 
     <Grid>
@@ -24,70 +23,79 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- TOP APP HEADER BAR -->
-        <Border Grid.Row="0" Background="{StaticResource BgSurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,10">
-            <DockPanel LastChildFill="False">
-                <!-- Title & Ecosystem Subtitle -->
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
-                    <Border Background="#0284c7" CornerRadius="8" Width="34" Height="34" Margin="0,0,12,0">
-                        <TextBlock Text="⚡" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center" />
+        <!-- Header: title, tabs, Foundry Local status -->
+        <Border Grid.Row="0" Background="{StaticResource BgSurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,8">
+            <DockPanel LastChildFill="True">
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,24,0">
+                    <Border Background="#0284c7" CornerRadius="8" Width="32" Height="32" Margin="0,0,10,0">
+                        <TextBlock Text="⚡" FontSize="17" HorizontalAlignment="Center" VerticalAlignment="Center" />
                     </Border>
-                    <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="Foundry Local Intelligence Summarizer" Foreground="{StaticResource TextPrimaryBrush}" FontSize="15" FontWeight="Bold" />
-                        <TextBlock Text="Powered by Microsoft.Extensions.AI &amp; Foundry Local" Style="{StaticResource MutedText}" />
-                    </StackPanel>
+                    <TextBlock Text="Foundry Local Summarizer" Foreground="{StaticResource TextPrimaryBrush}" FontSize="15" FontWeight="Bold" VerticalAlignment="Center" />
                 </StackPanel>
 
-                <!-- Right Side: Samples + Privacy Mode Switch + Connection Status -->
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
-                    <!-- Quick Sample Pickers -->
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
-                        <TextBlock Text="Quick Samples:" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <Button Content="📄 Meeting" Style="{StaticResource SecondaryButton}" Command="{Binding LoadSampleCommand}" CommandParameter="meeting" Margin="0,0,4,0" Padding="8,4" FontSize="11" />
-                        <Button Content="📑 Proposal (.docx)" Style="{StaticResource SecondaryButton}" Command="{Binding LoadSampleCommand}" CommandParameter="proposal" Margin="0,0,4,0" Padding="8,4" FontSize="11" />
-                        <Button Content="📜 Contract" Style="{StaticResource SecondaryButton}" Command="{Binding LoadSampleCommand}" CommandParameter="contract" Margin="0,0,4,0" Padding="8,4" FontSize="11" />
-                        <Button Content="📊 Deck (.pptx)" Style="{StaticResource SecondaryButton}" Command="{Binding LoadSampleCommand}" CommandParameter="deck" Margin="0,0,4,0" Padding="8,4" FontSize="11" />
-                    </StackPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
+                    <RadioButton Content="✨ Summarize" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
+                                 IsChecked="{Binding IsSummarizeTabSelected, Mode=OneWay}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="0" Margin="0,0,6,0" />
+                    <RadioButton Content="💬 Chat" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
+                                 IsChecked="{Binding IsChatTabSelected, Mode=OneWay}"
+                                 Command="{Binding SelectTabCommand}" CommandParameter="1" />
+                </StackPanel>
 
-                    <!-- Privacy Mode Toggle Switch -->
-                    <Border Background="{StaticResource BgCardBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="10,5" Margin="0,0,12,0">
-                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                            <CheckBox IsChecked="{Binding IsPrivacyMode}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <TextBlock Text="{Binding DaemonStatusText}" Foreground="{Binding DaemonStatusText, Converter={StaticResource StatusBrush}}" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Connection Ping Refresh -->
-                    <Button Content="↻ Ping" Style="{StaticResource SecondaryButton}" Command="{Binding CheckDaemonStatusCommand}" Padding="8,4" FontSize="11" ToolTip="Ping local Foundry daemon" />
+                <!-- Foundry Local: status dot, model picker, status text, refresh -->
+                <StackPanel DataContext="{Binding ModelPicker}" Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <Ellipse Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{StaticResource DangerBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsModelLoading}" Value="True">
+                                        <Setter Property="Fill" Value="{StaticResource WarningBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsModelReady}" Value="True">
+                                        <Setter Property="Fill" Value="{StaticResource SuccessBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="Model:" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <ComboBox ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel}"
+                              IsEnabled="{Binding CanChangeModel}" Width="290" Height="32" Margin="0,0,10,0"
+                              ToolTip="Models downloaded on this PC. Choosing one unloads the current model and loads the new one.">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Id}" />
+                                    <TextBlock Text="  ● in memory" Foreground="{StaticResource SuccessBrush}" FontSize="11" VerticalAlignment="Center"
+                                               Visibility="{Binding IsLoaded, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock Text="{Binding StatusText}" ToolTip="{Binding StatusText}"
+                               Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" MaxWidth="240"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <Button Content="↻" Style="{StaticResource SecondaryButton}" Command="{Binding RefreshModelsCommand}"
+                            Padding="10,4" FontSize="13" ToolTip="Refresh the model list and load the model (starts Foundry Local if it is not running)" />
                 </StackPanel>
             </DockPanel>
         </Border>
 
-        <!-- NAVIGATION TABS -->
-        <Border Grid.Row="1" Background="{StaticResource BgSurfaceBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="16,6">
-            <StackPanel Orientation="Horizontal">
-                <RadioButton Content="📄 Ingestion Pipeline" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
-                             IsChecked="{Binding IsTab0Selected, Mode=OneWay}"
-                             Command="{Binding SelectTabCommand}" CommandParameter="0" Margin="0,0,8,0" />
-                <RadioButton Content="✨ Persona Summarizer" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
-                             IsChecked="{Binding IsTab1Selected, Mode=OneWay}"
-                             Command="{Binding SelectTabCommand}" CommandParameter="1" Margin="0,0,8,0" />
-                <RadioButton Content="🧠 Semantic Grounding (RAG)" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
-                             IsChecked="{Binding IsTab2Selected, Mode=OneWay}"
-                             Command="{Binding SelectTabCommand}" CommandParameter="2" Margin="0,0,8,0" />
-                <RadioButton Content="🤖 Agentic Workflows" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
-                             IsChecked="{Binding IsTab3Selected, Mode=OneWay}"
-                             Command="{Binding SelectTabCommand}" CommandParameter="3" Margin="0,0,8,0" />
-                <RadioButton Content="💬 Interactive Chat" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
-                             IsChecked="{Binding IsTab4Selected, Mode=OneWay}"
-                             Command="{Binding SelectTabCommand}" CommandParameter="4" Margin="0,0,8,0" />
-                <RadioButton Content="🛡️ Rigor &amp; Evaluation" Style="{StaticResource NavTabButton}" GroupName="NavTabs"
-                             IsChecked="{Binding IsTab5Selected, Mode=OneWay}"
-                             Command="{Binding SelectTabCommand}" CommandParameter="5" />
-            </StackPanel>
+        <!-- Tab content (headers hidden; the buttons above switch tabs) -->
+        <!-- No model loaded: summarizing and chat are disabled until one is -->
+        <Border Grid.Row="1" Background="#3b1d1d" BorderBrush="{StaticResource DangerBrush}" BorderThickness="0,0,0,1" Padding="16,8"
+                Visibility="{Binding ModelPicker.ShowNotReadyBanner, Converter={StaticResource BoolToVis}}">
+            <DockPanel>
+                <Button Content="↻ Try Again" Style="{StaticResource SecondaryButton}" Command="{Binding ModelPicker.RefreshModelsCommand}"
+                        DockPanel.Dock="Right" Padding="10,4" FontSize="12" />
+                <TextBlock TextWrapping="Wrap" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}" FontSize="12">
+                    <Run Text="No model is loaded, so the app is disabled until one is." FontWeight="SemiBold" />
+                    <Run Text="{Binding ModelPicker.StatusText, Mode=OneWay}" />
+                </TextBlock>
+            </DockPanel>
         </Border>
 
-        <!-- MAIN VIEW CONTAINER (Standard TabControl with Hidden Tab Headers) -->
         <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTabIndex}" Background="Transparent" BorderThickness="0" Margin="0" Padding="0">
             <TabControl.ItemContainerStyle>
                 <Style TargetType="TabItem">
@@ -95,35 +103,26 @@
                 </Style>
             </TabControl.ItemContainerStyle>
 
-            <!-- Tab 0: Ingestion -->
-            <TabItem Header="Ingestion">
-                <views:IngestionView DataContext="{Binding IngestionVm}" />
-            </TabItem>
-
-            <!-- Tab 1: Persona Summarizer -->
-            <TabItem Header="Summarizer">
+            <TabItem Header="Summarize">
                 <views:SummarizerView DataContext="{Binding SummarizerVm}" />
             </TabItem>
 
-            <!-- Tab 2: Grounding -->
-            <TabItem Header="Grounding">
-                <views:GroundingView DataContext="{Binding GroundingVm}" />
-            </TabItem>
-
-            <!-- Tab 3: Agentic -->
-            <TabItem Header="Agentic">
-                <views:AgenticView DataContext="{Binding AgenticVm}" />
-            </TabItem>
-
-            <!-- Tab 4: Chat -->
             <TabItem Header="Chat">
                 <views:ChatView DataContext="{Binding ChatVm}" />
             </TabItem>
-
-            <!-- Tab 5: Evaluation -->
-            <TabItem Header="Evaluation">
-                <views:EvaluationView DataContext="{Binding EvaluationVm}" />
-            </TabItem>
         </TabControl>
+
+        <!-- Model loading: covers the tabs so nothing can be used until the model is ready -->
+        <Grid Grid.Row="1" Grid.RowSpan="2" Background="#CC090d16"
+              Visibility="{Binding ModelPicker.IsModelLoading, Converter={StaticResource BoolToVis}}">
+            <Border Style="{StaticResource ModernCard}" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="32,24" MinWidth="380">
+                <StackPanel>
+                    <TextBlock Text="⏳" FontSize="28" HorizontalAlignment="Center" Margin="0,0,0,10" />
+                    <TextBlock Text="{Binding ModelPicker.LoadingText}" Foreground="{StaticResource TextPrimaryBrush}" FontSize="14"
+                               TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,14" />
+                    <ProgressBar IsIndeterminate="True" Height="5" Foreground="{StaticResource AccentPrimaryBrush}" Background="{StaticResource BorderBrush}" />
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

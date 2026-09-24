@@ -1,164 +1,213 @@
-﻿using System.Collections.ObjectModel;
-using System.Windows;
+using System.Collections.ObjectModel;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.Extensions.AI;
-using FoundrySummarizer.Core.Grounding;
+using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
+using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Wpf.Services;
 
 namespace FoundrySummarizer.Wpf.ViewModels;
 
+/// <summary>
+/// The summarize screen: open a document, pick a summary style, generate the summary with the local model.
+/// </summary>
 public partial class SummarizerViewModel : ObservableObject
 {
-    private readonly IPromptyEngine _promptyEngine;
-    private readonly HybridChatClientRouter _router;
-    private readonly IVectorGroundingService _groundingService;
+    private readonly IDocumentIngestionPipeline _ingestion;
+    private readonly IDocumentSummarizer _summarizer;
+    private readonly IDocumentPicker _documentPicker;
+    private readonly IClipboardService _clipboard;
+    private readonly SummarizationConfig _summarizationConfig;
+    private readonly IModelReadiness _modelReadiness;
+    private readonly IActivityTracker _activity;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDocument))]
+    [NotifyCanExecuteChangedFor(nameof(GenerateSummaryCommand))]
+    private string _documentText = string.Empty;
+
+    [ObservableProperty]
+    private string _documentName = string.Empty;
+
+    [ObservableProperty]
+    private int _estimatedTokens;
 
     [ObservableProperty]
     private PromptyDocument? _selectedPersona;
 
     [ObservableProperty]
-    private string _systemPrompt = string.Empty;
+    [NotifyPropertyChangedFor(nameof(HasSummary))]
+    [NotifyCanExecuteChangedFor(nameof(CopySummaryCommand))]
+    private string _summary = string.Empty;
 
     [ObservableProperty]
-    private string _userPromptTemplate = string.Empty;
+    [NotifyCanExecuteChangedFor(nameof(OpenDocumentCommand))]
+    private bool _isLoadingDocument;
 
     [ObservableProperty]
-    private bool _isGroundingEnabled = true;
+    private string _status = "Open a document to get started.";
 
     [ObservableProperty]
-    private string _generatedSummary = string.Empty;
+    private bool _isError;
 
-    [ObservableProperty]
-    private RoutingDecisionInfo? _lastRoutingInfo;
+    /// <summary>Summary styles defined by the built-in Prompty personas.</summary>
+    public ObservableCollection<PromptyDocument> Personas { get; }
 
-    [ObservableProperty]
-    private bool _isGenerating;
+    /// <summary>True when a document with extractable text is loaded.</summary>
+    public bool HasDocument => !string.IsNullOrWhiteSpace(DocumentText);
 
-    [ObservableProperty]
-    private string _generationStatus = "Ready to generate summary.";
+    /// <summary>True when a summary has been generated for the loaded document.</summary>
+    public bool HasSummary => !string.IsNullOrWhiteSpace(Summary);
 
-    public ObservableCollection<PromptyDocument> AvailablePersonas { get; } = new();
+    /// <summary>Raised after a document is loaded, with its name and text. Its previous summary has been cleared.</summary>
+    public event Action<string, string>? DocumentLoaded;
 
-    public string CurrentDocumentText { get; set; } = string.Empty;
-    public string CurrentDocumentName { get; set; } = string.Empty;
+    /// <summary>Raised after a summary is generated for the loaded document.</summary>
+    public event Action<string>? SummaryGenerated;
 
-    public event Action<string, string>? OnSummaryGenerated;
-
-    public SummarizerViewModel(IPromptyEngine promptyEngine, HybridChatClientRouter router, IVectorGroundingService groundingService)
+    /// <param name="ingestion">Extracts text from documents.</param>
+    /// <param name="promptyEngine">Supplies the summary styles.</param>
+    /// <param name="summarizer">Writes summaries (splitting long documents into parts).</param>
+    /// <param name="documentPicker">Asks the user for a file.</param>
+    /// <param name="clipboard">Copies the summary.</param>
+    /// <param name="summarizationConfig">Used to tell the user when a document will be read in parts.</param>
+    /// <param name="modelReadiness">Summarizing is disabled until a model is loaded.</param>
+    /// <param name="activity">Marks a running summary, so the model is not switched meanwhile.</param>
+    public SummarizerViewModel(
+        IDocumentIngestionPipeline ingestion,
+        IPromptyEngine promptyEngine,
+        IDocumentSummarizer summarizer,
+        IDocumentPicker documentPicker,
+        IClipboardService clipboard,
+        SummarizationConfig summarizationConfig,
+        IModelReadiness modelReadiness,
+        IActivityTracker activity)
     {
-        _promptyEngine = promptyEngine;
-        _router = router;
-        _groundingService = groundingService;
-
-        _router.OnRoutingDecision += decision =>
+        _modelReadiness = modelReadiness;
+        _activity = activity;
+        _modelReadiness.ReadinessChanged += (_, _) =>
         {
-            Application.Current?.Dispatcher.Invoke(() =>
-            {
-                LastRoutingInfo = decision;
-            });
+            GenerateSummaryCommand.NotifyCanExecuteChanged();
+            OpenDocumentCommand.NotifyCanExecuteChanged();
         };
 
-        LoadPersonas();
+        _ingestion = ingestion;
+        _summarizer = summarizer;
+        _documentPicker = documentPicker;
+        _clipboard = clipboard;
+        _summarizationConfig = summarizationConfig;
+
+        Personas = new ObservableCollection<PromptyDocument>(promptyEngine.AvailablePersonas);
+        SelectedPersona = Personas.FirstOrDefault();
     }
 
-    private void LoadPersonas()
+    /// <summary>Lets the user pick a file, then loads it.</summary>
+    [RelayCommand(CanExecute = nameof(CanOpenDocument))]
+    private async Task OpenDocumentAsync()
     {
-        AvailablePersonas.Clear();
-        foreach (var p in _promptyEngine.AvailablePersonas)
+        var path = _documentPicker.PickDocument(_ingestion.SupportedExtensions);
+        if (path is not null)
         {
-            AvailablePersonas.Add(p);
-        }
-
-        SelectedPersona = AvailablePersonas.FirstOrDefault();
-    }
-
-    partial void OnSelectedPersonaChanged(PromptyDocument? value)
-    {
-        if (value != null)
-        {
-            SystemPrompt = value.SystemPrompt;
-            UserPromptTemplate = value.UserPromptTemplate;
+            await LoadDocumentAsync(path);
         }
     }
 
-    [RelayCommand]
-    public async Task GenerateSummaryAsync()
+    // Like every other action, opening a document waits until a model is loaded.
+    private bool CanOpenDocument() => !IsLoadingDocument && !GenerateSummaryCommand.IsRunning && _modelReadiness.IsModelReady;
+
+    private bool CanGenerateSummary() => HasDocument && _modelReadiness.IsModelReady;
+
+    /// <summary>
+    /// Extracts the text of <paramref name="filePath"/> and makes it the document to summarize, clearing the
+    /// previous document's summary so a stale summary is never shown next to a new document.
+    /// </summary>
+    /// <param name="filePath">Full path of a supported document.</param>
+    public async Task LoadDocumentAsync(string filePath)
     {
-        if (string.IsNullOrWhiteSpace(CurrentDocumentText))
-        {
-            GenerationStatus = "Please ingest or load a document first!";
-            return;
-        }
-
-        if (SelectedPersona == null)
-        {
-            GenerationStatus = "Please select a summary persona.";
-            return;
-        }
-
-        IsGenerating = true;
-        GenerationStatus = $"Running summarization pipeline ({SelectedPersona.Name})...";
-
+        IsLoadingDocument = true;
+        SetStatus($"Reading {Path.GetFileName(filePath)}...");
         try
         {
-            string groundingContext = string.Empty;
-            if (IsGroundingEnabled)
+            var result = await _ingestion.IngestFileAsync(filePath);
+            DocumentName = result.FileName;
+            DocumentText = result.ExtractedText;
+            EstimatedTokens = result.EstimatedTokens;
+            Summary = string.Empty;
+
+            if (!HasDocument)
             {
-                GenerationStatus = "Querying Microsoft.Extensions.VectorData for policy cross-references...";
-                groundingContext = await _groundingService.BuildGroundingPromptContextAsync(CurrentDocumentText);
+                SetStatus($"No text could be extracted from {result.FileName}. If it is a scanned PDF, run OCR on it first.", isError: true);
+                return;
             }
 
-            var variables = new Dictionary<string, string>
-            {
-                ["documentText"] = CurrentDocumentText,
-                ["groundingContext"] = groundingContext
-            };
-
-            var activeDoc = SelectedPersona with
-            {
-                SystemPrompt = SystemPrompt,
-                UserPromptTemplate = UserPromptTemplate
-            };
-
-            var messages = _promptyEngine.RenderChatMessages(activeDoc, variables);
-
-            GenerationStatus = "Processing via Foundry Local router...";
-            var response = await _router.GetResponseAsync(messages);
-
-            GeneratedSummary = response.Text ?? string.Empty;
-            GenerationStatus = $"Summary generated successfully via {LastRoutingInfo?.RouteName ?? "Foundry Local"}";
-            OnSummaryGenerated?.Invoke(CurrentDocumentName, GeneratedSummary);
+            var length = result.EstimatedTokens > _summarizationConfig.MaxSinglePassTokens
+                ? $"~{result.EstimatedTokens:N0} tokens, will be read in parts"
+                : $"~{result.EstimatedTokens:N0} tokens";
+            SetStatus($"Loaded {result.FileName} ({length}). Choose a summary style and click Summarize.");
+            DocumentLoaded?.Invoke(DocumentName, DocumentText);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or DocumentReadException)
         {
-            GenerationStatus = $"Error: {ex.Message}";
+            SetStatus($"Could not read {Path.GetFileName(filePath)}: {ex.Message}", isError: true);
         }
         finally
         {
-            IsGenerating = false;
+            IsLoadingDocument = false;
         }
     }
 
-    [RelayCommand]
-    public void CopySummary()
+    /// <summary>Summarizes the loaded document in the selected style. Cancellable via <c>GenerateSummaryCancelCommand</c>.</summary>
+    [RelayCommand(CanExecute = nameof(CanGenerateSummary), IncludeCancelCommand = true)]
+    private async Task GenerateSummaryAsync(CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(GeneratedSummary))
+        if (SelectedPersona is null)
         {
-            Clipboard.SetText(GeneratedSummary);
-            GenerationStatus = "Summary copied to clipboard!";
+            SetStatus("Choose a summary style first.", isError: true);
+            return;
+        }
+
+        using var busy = _activity.Begin();
+        OpenDocumentCommand.NotifyCanExecuteChanged();
+        SetStatus($"Summarizing with {SelectedPersona.Name}...");
+        try
+        {
+            // Progress<T> captures the UI synchronization context, so status updates are marshalled safely.
+            var progress = new Progress<string>(message => SetStatus(message));
+            var result = await _summarizer.SummarizeAsync(new SummarizationRequest(SelectedPersona, DocumentText), progress, cancellationToken);
+
+            Summary = result.Summary;
+            SetStatus(result.UsedMultiPart
+                ? $"Summary written from {result.PartCount} parts of the document. Ask follow-up questions in the Chat tab."
+                : "Summary ready. Ask follow-up questions in the Chat tab.");
+            SummaryGenerated?.Invoke(Summary);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            SetStatus("Summary cancelled.");
+        }
+        catch (LocalModelUnavailableException ex)
+        {
+            SetStatus($"⚠️ No summary: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            OpenDocumentCommand.NotifyCanExecuteChanged();
         }
     }
 
-    [RelayCommand]
-    public void ResetTemplate()
+    /// <summary>Copies the summary to the clipboard.</summary>
+    [RelayCommand(CanExecute = nameof(HasSummary))]
+    private void CopySummary()
     {
-        if (SelectedPersona != null)
-        {
-            SystemPrompt = SelectedPersona.SystemPrompt;
-            UserPromptTemplate = SelectedPersona.UserPromptTemplate;
-            GenerationStatus = "Prompt templates reset to defaults.";
-        }
+        var problem = _clipboard.TrySetText(Summary);
+        SetStatus(problem ?? "Summary copied to the clipboard.", isError: problem is not null);
+    }
+
+    private void SetStatus(string message, bool isError = false)
+    {
+        Status = message;
+        IsError = isError;
     }
 }

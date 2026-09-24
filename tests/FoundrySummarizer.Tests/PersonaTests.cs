@@ -31,8 +31,7 @@ public class PersonaTests
 
         var vars = new Dictionary<string, string>
         {
-            ["documentText"] = "Proposal to invest $150,000 in local hardware.",
-            ["groundingContext"] = "NOTE: Exceeds $100k VP approval gate."
+            ["documentText"] = "Proposal to invest $150,000 in local hardware."
         };
 
         var messages = engine.RenderChatMessages(exec, vars);
@@ -40,7 +39,7 @@ public class PersonaTests
 
         var userMsg = messages[1].Text!;
         Assert.Contains("Proposal to invest $150,000", userMsg);
-        Assert.Contains("NOTE: Exceeds $100k", userMsg);
+        Assert.DoesNotContain("{{", userMsg);
     }
 
     [Fact]
@@ -72,5 +71,81 @@ public class PersonaTests
         Assert.Equal(2000, doc.ModelConfig.MaxTokens);
         Assert.Contains("Principal Software Architect", doc.SystemPrompt);
         Assert.Contains("CODE REPOSITORY:", doc.UserPromptTemplate);
+    }
+
+    [Fact]
+    public void PromptyDocument_ToChatOptions_CarriesPersonaSamplingSettings()
+    {
+        var engine = new PromptyEngine();
+        var options = engine.GetPersona("Executive Bullets")!.ToChatOptions();
+
+        Assert.Equal(0.1f, options.Temperature);
+        Assert.Equal(0.9f, options.TopP);
+        Assert.Equal(1500, options.MaxOutputTokens);
+    }
+
+    [Fact]
+    public void PromptyEngine_ParsesDecimalsIndependentOfCurrentCulture()
+    {
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            // de-DE uses ',' as the decimal separator, so a culture-sensitive parse reads "0.1" as 1.
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            var doc = new PromptyEngine().GetPersona("Legal Compliance Check")!;
+
+            Assert.Equal(0.1, doc.ModelConfig.Temperature);
+            Assert.Equal(0.9, doc.ModelConfig.TopP);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Fact]
+    public void PromptyDocument_DoesNotExpandPlaceholdersInsideSubstitutedValues()
+    {
+        var doc = new PromptyDocument { UserPromptTemplate = "<document>{{documentText}}</document>\n{{persona}}" };
+        var vars = new Dictionary<string, string>
+        {
+            ["documentText"] = "Literal {{persona}} in source.",
+            ["persona"] = "EXEC"
+        };
+
+        var rendered = doc.RenderUserPrompt(vars);
+
+        Assert.Equal("<document>Literal {{persona}} in source.</document>\nEXEC", rendered);
+    }
+
+    [Fact]
+    public void PromptyEngine_IgnoresRoleWordsInsidePromptText()
+    {
+        var custom = """
+        ---
+        name: Role Word Test
+        ---
+        system:
+        Explain things so that the end user: a non-expert, understands them.
+
+        user:
+        {{documentText}}
+        """;
+
+        var doc = new PromptyEngine().Parse(custom);
+
+        Assert.Contains("the end user: a non-expert", doc.SystemPrompt);
+        Assert.Equal("{{documentText}}", doc.UserPromptTemplate);
+    }
+
+    [Fact]
+    public void BuiltInPersonas_WrapDocumentAndForbidInvention()
+    {
+        var engine = new PromptyEngine();
+        foreach (var persona in engine.AvailablePersonas)
+        {
+            Assert.Contains("Use ONLY facts stated inside <document>", persona.SystemPrompt);
+            Assert.Contains("<document>\n{{documentText}}\n</document>", persona.UserPromptTemplate);
+        }
     }
 }

@@ -63,32 +63,39 @@ public class PromptyEngine : IPromptyEngine
         {
             double temp = 0.2;
             int maxTok = 1500;
+            double topP = 0.95;
             if (mDict.TryGetValue("parameters", out var pObj) && pObj is Dictionary<object, object> pDict)
             {
-                if (pDict.TryGetValue("temperature", out var tVal) && double.TryParse(tVal?.ToString(), out var parsedT)) temp = parsedT;
+                // Invariant culture: YAML always uses '.' decimals; under e.g. de-DE "0.1" would otherwise parse as 1.
+                if (pDict.TryGetValue("temperature", out var tVal) && double.TryParse(tVal?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedT)) temp = parsedT;
                 if (pDict.TryGetValue("max_tokens", out var maxVal) && int.TryParse(maxVal?.ToString(), out var parsedM)) maxTok = parsedM;
+                if (pDict.TryGetValue("top_p", out var pVal) && double.TryParse(pVal?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsedP)) topP = parsedP;
             }
             modelConfig = new PromptyModelConfig(
                 Api: mDict.TryGetValue("api", out var apiVal) ? apiVal?.ToString() : "chat",
                 Temperature: temp,
-                MaxTokens: maxTok
+                MaxTokens: maxTok,
+                TopP: topP
             );
         }
 
         string systemPrompt = string.Empty;
         string userPrompt = body;
 
-        int systemIdx = body.IndexOf("system:", StringComparison.OrdinalIgnoreCase);
-        int userIdx = body.IndexOf("user:", StringComparison.OrdinalIgnoreCase);
+        // Role markers are matched only at the start of a line so that prose such as
+        // "the end user: ..." inside a prompt is not mistaken for a role boundary.
+        var systemMatch = RoleMarkerRegex("system").Match(body);
+        var userMatch = RoleMarkerRegex("user").Match(body);
 
-        if (systemIdx >= 0 && userIdx > systemIdx)
+        if (systemMatch.Success && userMatch.Success && userMatch.Index > systemMatch.Index)
         {
-            systemPrompt = body.Substring(systemIdx + 7, userIdx - (systemIdx + 7)).Trim();
-            userPrompt = body.Substring(userIdx + 5).Trim();
+            int systemStart = systemMatch.Index + systemMatch.Length;
+            systemPrompt = body.Substring(systemStart, userMatch.Index - systemStart).Trim();
+            userPrompt = body.Substring(userMatch.Index + userMatch.Length).Trim();
         }
-        else if (systemIdx >= 0 && userIdx < 0)
+        else if (systemMatch.Success && !userMatch.Success)
         {
-            systemPrompt = body.Substring(systemIdx + 7).Trim();
+            systemPrompt = body.Substring(systemMatch.Index + systemMatch.Length).Trim();
             userPrompt = string.Empty;
         }
 
@@ -102,6 +109,9 @@ public class PromptyEngine : IPromptyEngine
             RawContent = promptyContent
         };
     }
+
+    private static System.Text.RegularExpressions.Regex RoleMarkerRegex(string role) =>
+        new($@"^[ \t]*{role}:", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Multiline);
 
     public PromptyDocument? GetPersona(string name)
     {
@@ -148,30 +158,37 @@ public class PromptyEngine : IPromptyEngine
       api: chat
       parameters:
         temperature: 0.1
+        top_p: 0.9
         max_tokens: 1500
     ---
     system:
     You are an elite Chief of Staff and Enterprise Intelligence Officer. Your output must strictly be high-level, actionable, and focused on strategic impact, financial figures, resource allocations, and critical risks. Do not include trivial technical minutiae.
 
+    ACCURACY RULES (follow strictly):
+    1. Use ONLY facts stated inside <document>. Never invent names, dates, amounts, parties, clauses or deadlines.
+    2. If a section asks for information the document does not contain, write "Not stated in the document." for that item.
+    3. Copy figures, dates and names exactly as written in the document. Do not round, convert or estimate.
+    4. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
+
     user:
-    {{groundingContext}}
-
-    DOCUMENT TO SUMMARIZE:
+    <document>
     {{documentText}}
+    </document>
 
-    STRUCTURE YOUR SUMMARY ACCORDING TO THESE EXACT SECTIONS:
+    Summarize the document above using EXACTLY these four sections and headings:
+
     ### 1. Executive Summary & Strategic Value
-    - High-level synopsis of the core objective and organizational impact.
+    - [2-3 bullets: the core objective and its organizational impact, as stated in the document]
 
     ### 2. Financial & Cost Assessment
-    - Explicit itemized and total cost figures.
-    - Highlight any budget constraints, discrepancies, or policy caps noted.
+    - [Each cost figure from the document with what it pays for, then the total if the document gives one]
+    - [Budget constraints or discrepancies stated in the document]
 
     ### 3. Key Milestones & Critical Path
-    - Major target dates, deliverables, and dependencies.
+    - [Target dates, deliverables and dependencies exactly as stated]
 
     ### 4. Strategic Risks & Recommended Executive Actions
-    - Top operational or compliance risks and immediate decisions required.
+    - [Risks the document raises and the decisions it asks for]
     """;
 
     public static readonly string ActionItemExtractorPrompty = """
@@ -181,28 +198,37 @@ public class PromptyEngine : IPromptyEngine
     model:
       api: chat
       parameters:
-        temperature: 0.2
+        temperature: 0.1
+        top_p: 0.9
         max_tokens: 1500
     ---
     system:
     You are an Expert Project Management AI. Your objective is to extract and organize actionable tasks, ownership assignments, deadlines, technical requirements, and potential blockers from meeting transcripts or project documentation.
 
+    ACCURACY RULES (follow strictly):
+    1. Use ONLY facts stated inside <document>. Never invent names, dates, amounts, parties, clauses or deadlines.
+    2. If a section asks for information the document does not contain, write "Not stated in the document." for that item.
+    3. Copy figures, dates and names exactly as written in the document. Do not round, convert or estimate.
+    4. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
+    5. List a task only if the document states or clearly assigns it. If no owner or deadline is given, write "Unassigned" or "Not stated" in that cell.
+
     user:
-    {{groundingContext}}
-
-    TRANSCRIPT / DOCUMENT CONTENT:
+    <document>
     {{documentText}}
+    </document>
 
-    EXTRACT AND FORMAT ALL ACTION ITEMS AS FOLLOWS:
+    Extract every action item from the document above using EXACTLY this format:
+
     ### Action Items Breakdown
     | # | Task Description | Assignee / Owner | Deadline / Priority | Deliverable / Success Criteria |
     |---|------------------|------------------|---------------------|--------------------------------|
+    [One row per task found in the document]
 
     ### Key Technical Decisions Made
-    - Bulleted list of confirmed technical choices, architectural agreements, or policy updates.
+    - [Decisions, architectural agreements or policy updates the document confirms]
 
     ### Open Blockers & Dependencies
-    - Any unresolved dependencies, missing approvals, or cross-team prerequisites.
+    - [Unresolved dependencies, missing approvals or cross-team prerequisites the document mentions]
     """;
 
     public static readonly string LegalComplianceCheckPrompty = """
@@ -213,30 +239,38 @@ public class PromptyEngine : IPromptyEngine
       api: chat
       parameters:
         temperature: 0.1
+        top_p: 0.9
         max_tokens: 1800
     ---
     system:
     You are a Senior Corporate Legal and Regulatory Counsel Assistant. Your mission is to analyze commercial agreements, vendor contracts, and policy documents to identify liability exposures, indemnification obligations, termination terms, and compliance vulnerabilities.
 
+    ACCURACY RULES (follow strictly):
+    1. Use ONLY facts stated inside <document>. Never invent names, dates, amounts, parties, clauses or deadlines.
+    2. If a section asks for information the document does not contain, write "Not stated in the document." for that item.
+    3. Copy figures, dates and names exactly as written in the document. Do not round, convert or estimate.
+    4. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
+    5. When you describe a clause, cite its section number or quote its key words from the document.
+
     user:
-    {{groundingContext}}
-
-    CONTRACT / POLICY DOCUMENT:
+    <document>
     {{documentText}}
+    </document>
 
-    PERFORM COMPREHENSIVE LEGAL ASSESSMENT:
+    Assess the document above using EXACTLY these four sections and headings:
+
     ### 1. Contract Overview & Commercial Terms
-    - Parties involved, contract term, governing law, and core transaction value.
+    - [Parties, contract term, governing law and transaction value as stated]
 
     ### 2. High-Risk Clauses & Liability Exposures
-    - Liability Caps: (Verify against company standard policy of 1x or 2x contract value)
-    - Indemnification & Intellectual Property protection clauses.
-    - Data privacy, GDPR/HIPAA/SOC2 compliance requirements.
+    - Liability Caps: [the cap as written, and any limit relative to contract value]
+    - Indemnification & IP: [the indemnification and intellectual property clauses as written]
+    - Data Privacy & Compliance: [GDPR/HIPAA/SOC2 or other obligations the document names]
 
     ### 3. Termination, Cure Periods & Breach Consequences
-    - Notice periods required for convenience and cause.
+    - [Notice periods for convenience and for cause, and cure periods, as written]
 
     ### 4. Red Flag Warnings & Counsel Recommendations
-    - Specific clauses requiring renegotiation or executive exception approval before signature.
+    - [Clauses needing renegotiation or executive exception approval, each with the reason]
     """;
 }

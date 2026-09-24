@@ -4,9 +4,10 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:converters="clr-namespace:FoundrySummarizer.Wpf.Converters"
-             mc:Ignorable="d" d:DesignHeight="750" d:DesignWidth="1100">
+             mc:Ignorable="d" d:DesignHeight="650" d:DesignWidth="1080">
     <UserControl.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVis" />
     </UserControl.Resources>
 
     <Grid Margin="20">
@@ -16,113 +17,92 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <!-- Top Controls: Persona Selector + Grounding Toggle + Action Buttons -->
-        <Border Grid.Row="0" Style="{StaticResource ModernCard}" Margin="0,0,0,16">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <DockPanel Grid.Row="0" LastChildFill="False">
-                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
-                        <TextBlock Text="Summary Persona:" Style="{StaticResource HeadingMedium}" VerticalAlignment="Center" Margin="0,0,12,0" />
-                        <ComboBox ItemsSource="{Binding AvailablePersonas}"
-                                  SelectedItem="{Binding SelectedPersona}"
-                                  DisplayMemberPath="Name"
-                                  Width="240" Height="34" />
-                    </StackPanel>
-
-                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
-                        <CheckBox IsChecked="{Binding IsGroundingEnabled}" 
-                                  Content="🧠 RAG Semantic Grounding"
-                                  Foreground="{StaticResource TextPrimaryBrush}"
-                                  FontWeight="Medium" VerticalAlignment="Center" Margin="0,0,16,0" />
-
-                        <Button Content="✨ Generate Summary" Style="{StaticResource PrimaryButton}"
-                                Command="{Binding GenerateSummaryCommand}" />
-                    </StackPanel>
-                </DockPanel>
-
-                <!-- Persona Description & Document Info -->
-                <DockPanel Grid.Row="1" Margin="0,8,0,0">
-                    <TextBlock Text="{Binding SelectedPersona.Description}" Style="{StaticResource MutedText}" DockPanel.Dock="Left" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding CurrentDocumentName, StringFormat='Active Document: {0}'}" Foreground="{StaticResource AccentPrimaryBrush}" FontSize="12" FontWeight="Medium" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" />
-                </DockPanel>
-            </Grid>
-        </Border>
-
-        <!-- Routing & Status Card -->
-        <Border Grid.Row="1" Style="{StaticResource SurfaceCard}" Margin="0,0,0,16">
-            <DockPanel>
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left" VerticalAlignment="Center">
-                    <Border Background="#1e3a5f" CornerRadius="4" Padding="8,4" Margin="0,0,10,0">
-                        <TextBlock Text="{Binding LastRoutingInfo.RouteName, FallbackValue='Microsoft Foundry Local ($0.00)'}" 
-                                   Foreground="{StaticResource AccentPrimaryBrush}" FontWeight="SemiBold" FontSize="12" />
-                    </Border>
-                    <TextBlock Text="{Binding LastRoutingInfo.Rationale, FallbackValue='Ready to process locally via Microsoft Foundry Local on localhost.'}" 
-                               Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" VerticalAlignment="Center" />
+        <!-- Step 1 + 2: open a document, choose a style, summarize -->
+        <Border Grid.Row="0" Style="{StaticResource ModernCard}" Margin="0,0,0,12">
+            <DockPanel LastChildFill="True">
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" VerticalAlignment="Center">
+                    <TextBlock Text="Style:" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <ComboBox ItemsSource="{Binding Personas}" SelectedItem="{Binding SelectedPersona}" DisplayMemberPath="Name"
+                              ToolTip="{Binding SelectedPersona.Description}" Width="210" Height="34" Margin="0,0,12,0" />
+                    <Button Content="✨ Summarize" Style="{StaticResource PrimaryButton}" Command="{Binding GenerateSummaryCommand}"
+                            Visibility="{Binding GenerateSummaryCommand.IsRunning, Converter={StaticResource InverseBoolToVis}}" />
+                    <Button Content="✖ Cancel" Style="{StaticResource SecondaryButton}" Command="{Binding GenerateSummaryCancelCommand}"
+                            Visibility="{Binding GenerateSummaryCommand.IsRunning, Converter={StaticResource BoolToVis}}" />
                 </StackPanel>
 
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
-                    <ProgressBar IsIndeterminate="{Binding IsGenerating}" Visibility="{Binding IsGenerating, Converter={StaticResource BoolToVis}}" 
-                                 Width="100" Height="6" Margin="0,0,12,0" Foreground="{StaticResource AccentPrimaryBrush}" Background="{StaticResource BorderBrush}" />
-                    <TextBlock Text="{Binding GenerationStatus}" Foreground="{StaticResource TextMutedBrush}" FontSize="12" VerticalAlignment="Center" />
+                <Button Content="📂 Open Document..." Style="{StaticResource SecondaryButton}" Command="{Binding OpenDocumentCommand}"
+                        DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,14,0" />
+
+                <StackPanel VerticalAlignment="Center">
+                    <!-- Text is set in the style (not locally) so the trigger can replace it while no document is open. -->
+                    <TextBlock Foreground="{StaticResource TextPrimaryBrush}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="{Binding DocumentName}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding DocumentName}" Value="">
+                                        <Setter Property="Text" Value="No document open" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding SelectedPersona.Description}" Style="{StaticResource MutedText}" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                 </StackPanel>
             </DockPanel>
         </Border>
 
-        <!-- Main Content Area: Left = Prompty Template Editor, Right = Generated Summary Output -->
+        <!-- Status -->
+        <Border Grid.Row="1" Style="{StaticResource SurfaceCard}" Margin="0,0,0,12">
+            <StackPanel Orientation="Horizontal">
+                <ProgressBar IsIndeterminate="True" Width="90" Height="5" Margin="0,0,12,0" VerticalAlignment="Center"
+                             Foreground="{StaticResource AccentPrimaryBrush}" Background="{StaticResource BorderBrush}"
+                             Visibility="{Binding GenerateSummaryCommand.IsRunning, Converter={StaticResource BoolToVis}}" />
+                <TextBlock Text="{Binding Status}" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsError}" Value="True">
+                                    <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <!-- Document text (to check what was extracted) and the summary -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="2*" />
                 <ColumnDefinition Width="3*" />
             </Grid.ColumnDefinitions>
 
-            <!-- Prompty Template Inspector & Editor -->
             <Border Grid.Column="0" Style="{StaticResource ModernCard}" Margin="0,0,12,0">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-
-                    <TextBlock Grid.Row="0" Text="Prompty: System Prompt" Style="{StaticResource HeadingMedium}" Margin="0,0,0,6" />
-                    <TextBox Grid.Row="1" Text="{Binding SystemPrompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             Style="{StaticResource ModernTextBox}" AcceptsReturn="True" TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" Margin="0,0,0,12" />
-
-                    <TextBlock Grid.Row="2" Text="Prompty: User Template (with {{groundingContext}})" Style="{StaticResource HeadingMedium}" Margin="0,0,0,6" />
-                    <TextBox Grid.Row="3" Text="{Binding UserPromptTemplate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             Style="{StaticResource ModernTextBox}" AcceptsReturn="True" TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" Margin="0,0,0,10" />
-
-                    <Button Grid.Row="4" Content="↺ Reset to Default Prompty" Style="{StaticResource SecondaryButton}" Command="{Binding ResetTemplateCommand}" HorizontalAlignment="Right" />
-                </Grid>
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                        <TextBlock Text="Document Text" Style="{StaticResource HeadingMedium}" DockPanel.Dock="Left" />
+                        <TextBlock Text="{Binding EstimatedTokens, StringFormat='~{0:N0} tokens'}" Style="{StaticResource MutedText}"
+                                   HorizontalAlignment="Right" VerticalAlignment="Center"
+                                   Visibility="{Binding HasDocument, Converter={StaticResource BoolToVis}}" />
+                    </DockPanel>
+                    <TextBox Text="{Binding DocumentText, Mode=OneWay}" IsReadOnly="True"
+                             Style="{StaticResource ModernTextBox}" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" />
+                </DockPanel>
             </Border>
 
-            <!-- Final Summary Output -->
             <Border Grid.Column="1" Style="{StaticResource ModernCard}">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                        <TextBlock Text="Final Intelligence Summary" Style="{StaticResource HeadingMedium}" DockPanel.Dock="Left" />
-                        <Button Content="📋 Copy Summary" Style="{StaticResource SecondaryButton}" Command="{Binding CopySummaryCommand}" DockPanel.Dock="Right" HorizontalAlignment="Right" />
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                        <TextBlock Text="Summary" Style="{StaticResource HeadingMedium}" DockPanel.Dock="Left" VerticalAlignment="Center" />
+                        <Button Content="📋 Copy" Style="{StaticResource SecondaryButton}" Command="{Binding CopySummaryCommand}" HorizontalAlignment="Right" />
                     </DockPanel>
-
-                    <TextBox Grid.Row="1" Text="{Binding GeneratedSummary, Mode=TwoWay}"
-                             Style="{StaticResource ModernTextBox}"
-                             AcceptsReturn="True" TextWrapping="Wrap"
-                             FontFamily="Consolas, Segoe UI" FontSize="13"
-                             VerticalScrollBarVisibility="Auto" />
-                </Grid>
+                    <TextBox Text="{Binding Summary, Mode=OneWay}" IsReadOnly="True"
+                             Style="{StaticResource ModernTextBox}" TextWrapping="Wrap"
+                             FontFamily="Consolas, Segoe UI" FontSize="13" VerticalScrollBarVisibility="Auto" />
+                </DockPanel>
             </Border>
         </Grid>
     </Grid>
