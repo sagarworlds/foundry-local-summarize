@@ -210,16 +210,32 @@ public class FoundryLocalServiceTests
     }
 
     [Fact]
-    public async Task Router_ExplainsWhyItFellBackToDemoOutput()
+    public async Task ChatClient_ThrowsWithTheReasonWhenNoModelIsReachable()
     {
         var server = new FakeServer(Array.Empty<string>(), _ => FakeServer.NotFound());
         var options = Options();
-        var router = new HybridChatClientRouter(options, new FoundryLocalService(options, FakeCli.NotInstalled(), server));
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.NotInstalled(), server));
 
-        var response = await router.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Summarize: budget is $150,000.") });
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
+            client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Summarize: budget is $150,000.") }));
 
-        Assert.StartsWith(HybridChatClientRouter.FallbackNotice, response.Text);
-        Assert.Contains("> **Why:** No local model service is reachable at http://127.0.0.1:63715/", response.Text);
-        Assert.Equal(router.LastFallbackReason, router.LastRoutingDecision?.Rationale.Split("⚠️ ")[1].Split(" The output is canned")[0]);
+        Assert.Contains("No local model service is reachable at http://127.0.0.1:63715/", ex.Message);
+        Assert.Contains("'foundry' command was not found", ex.Message);
+    }
+
+    [Fact]
+    public async Task ChatClient_ExplainsAFailedRequest()
+    {
+        // Model management (faked) says the model is ready, but the chat request itself goes over real HTTP
+        // to a closed port, so it fails in transport like a crashed or restarting service would.
+        var options = Options(o => { o.AutoDiscover = false; o.Endpoint = "http://127.0.0.1:9/v1"; });
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.NotInstalled(),
+            new FakeServer(new[] { "127.0.0.1:9" }, _ => FakeServer.Json("[]"))));
+
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
+            client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "hello") }));
+
+        Assert.StartsWith($"The request to model '{client.ActiveModelId}' failed:", ex.Message);
+        Assert.NotNull(ex.InnerException);
     }
 }

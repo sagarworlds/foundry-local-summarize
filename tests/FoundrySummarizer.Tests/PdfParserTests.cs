@@ -68,7 +68,7 @@ public class PdfParserTests
     }
 
     [Fact]
-    public async Task Pipeline_ChunksExtractedPdfByParagraph()
+    public async Task Pipeline_ExtractsPdfText()
     {
         var path = Path.Combine(Path.GetTempPath(), $"pdf-test-{Guid.NewGuid():N}.pdf");
         await File.WriteAllBytesAsync(path, BuildWordPositionedPdf());
@@ -77,7 +77,6 @@ public class PdfParserTests
             var result = await new DocumentIngestionPipeline().IngestFileAsync(path);
 
             Assert.Contains("Total initial engagement fee is $85,000.", result.ExtractedText);
-            Assert.NotEmpty(result.Chunks);
         }
         finally
         {

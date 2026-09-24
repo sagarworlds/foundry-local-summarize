@@ -21,7 +21,7 @@ public class LocalFoundryConfig
 
     /// <summary>
     /// Maximum seconds to wait for one model response. Small models on CPU can take minutes to summarize a
-    /// long document; a request that times out is answered by the offline demo engine instead.
+    /// long document; a request that times out fails with an explanation of what to change.
     /// </summary>
     public int TimeoutSeconds { get; set; } = 300;
 
@@ -32,7 +32,6 @@ public class LocalFoundryConfig
 
     /// <summary>Maximum seconds to wait for Foundry Local to load a model into memory before first use.</summary>
     public int ModelLoadTimeoutSeconds { get; set; } = 300;
-    public string Provider { get; set; } = "FoundryLocal";
 
     /// <summary>
     /// When true, the router lists the models the local endpoint serves and uses the first match from
@@ -78,14 +77,6 @@ public class SummarizationConfig
     public int MaxCondenseRounds { get; set; } = 3;
 }
 
-public class CloudFoundryConfig
-{
-    public string Endpoint { get; set; } = "https://models.inference.ai.azure.com";
-    public string ModelId { get; set; } = "gpt-4o";
-    public string? ApiKey { get; set; }
-    public string Provider { get; set; } = "AzureAIFoundry";
-}
-
 /// <summary>
 /// Context budgets for the interactive document chat, in estimated tokens. Together with the summary and
 /// the answer they must fit the local model's context window.
@@ -102,83 +93,64 @@ public class ChatConfig
     public int MaxAnswerTokens { get; set; } = 500;
 }
 
+/// <summary>Settings bound from the "Foundry" section of appsettings.json.</summary>
 public class FoundryOptions
 {
     public const string SectionName = "Foundry";
 
-    public bool PrivacyMode { get; set; } = true;
-    public bool EscalateOnComplexity { get; set; } = true;
-    public int EscalationTokenThreshold { get; set; } = 2500;
-
     public LocalFoundryConfig Local { get; set; } = new();
-    public CloudFoundryConfig Cloud { get; set; } = new();
     public SummarizationConfig Summarization { get; set; } = new();
     public ChatConfig Chat { get; set; } = new();
 
+    /// <summary>
+    /// The endpoint to try when CLI discovery finds nothing: the address recorded in the legacy
+    /// ~/.foundry/daemon.json (when discovery is on), otherwise <see cref="LocalFoundryConfig.Endpoint"/>.
+    /// </summary>
     public string GetEffectiveLocalEndpoint()
     {
-        if (Local.AutoDiscover || string.Equals(Local.Endpoint, "auto", StringComparison.OrdinalIgnoreCase))
+        bool isAuto = string.Equals(Local.Endpoint, "auto", StringComparison.OrdinalIgnoreCase);
+        if ((Local.AutoDiscover || isAuto) && TryReadDaemonFileEndpoint() is { } fromDaemonFile)
         {
-            try
-            {
-                string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                string daemonPath = System.IO.Path.Combine(userProfile, ".foundry", "daemon.json");
-                if (System.IO.File.Exists(daemonPath))
-                {
-                    string json = System.IO.File.ReadAllText(daemonPath);
-                    using var doc = System.Text.Json.JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("web_urls", out var urls) && urls.GetArrayLength() > 0)
-                    {
-                        var url = urls[0].GetString();
-                        if (!string.IsNullOrEmpty(url))
-                        {
-                            return url.TrimEnd('/') + "/v1";
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Fall back
-            }
+            return fromDaemonFile;
         }
 
-        if (string.Equals(Local.Endpoint, "auto", StringComparison.OrdinalIgnoreCase))
-        {
-            return "http://localhost:5272/v1";
-        }
-
-        return Local.Endpoint;
+        return isAuto ? "http://localhost:5272/v1" : Local.Endpoint;
     }
 
-    // Convenience accessors mapping to the sub-objects for backward compatibility and clean binding
+    /// <summary>Convenience accessor for <see cref="LocalFoundryConfig.Endpoint"/>.</summary>
     public string LocalEndpoint
     {
         get => Local.Endpoint;
         set => Local.Endpoint = value;
     }
 
+    /// <summary>Convenience accessor for <see cref="LocalFoundryConfig.ModelId"/>.</summary>
     public string LocalModelId
     {
         get => Local.ModelId;
         set => Local.ModelId = value;
     }
 
-    public string CloudEndpoint
+    private static string? TryReadDaemonFileEndpoint()
     {
-        get => Cloud.Endpoint;
-        set => Cloud.Endpoint = value;
-    }
+        string daemonPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".foundry", "daemon.json");
+        if (!File.Exists(daemonPath)) return null;
 
-    public string CloudModelId
-    {
-        get => Cloud.ModelId;
-        set => Cloud.ModelId = value;
-    }
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(daemonPath));
+            if (doc.RootElement.TryGetProperty("web_urls", out var urls) && urls.ValueKind == System.Text.Json.JsonValueKind.Array
+                && urls.GetArrayLength() > 0 && urls[0].GetString() is { Length: > 0 } url)
+            {
+                return url.TrimEnd('/') + "/v1";
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or InvalidOperationException)
+        {
+            // The file is only a hint left by older Foundry Local versions; configuration still applies.
+            System.Diagnostics.Debug.WriteLine($"[FoundryOptions] Ignoring unreadable {daemonPath}: {ex.Message}");
+        }
 
-    public string? CloudApiKey
-    {
-        get => Cloud.ApiKey;
-        set => Cloud.ApiKey = value;
+        return null;
     }
 }

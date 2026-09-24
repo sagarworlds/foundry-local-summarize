@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using FoundrySummarizer.Core.Ingestion;
 
-namespace FoundrySummarizer.Core.Grounding;
+namespace FoundrySummarizer.Core.Chat;
 
 /// <summary>A document passage selected as evidence for a question.</summary>
 /// <param name="Number">1-based passage number, stable for the indexed document and used for [P#] citations.</param>
@@ -28,8 +28,8 @@ public interface IPassageRetriever
 
 /// <summary>
 /// Okapi BM25 lexical retrieval over document passages. Questions about a document usually name the
-/// exact figure, person, clause or term they are about, which lexical matching finds reliably; the
-/// hashed bag-of-words "embedding" used for policy grounding does not rank passages well enough for Q&amp;A.
+/// exact figure, person, clause or term they are about, which lexical matching finds reliably and
+/// without an embedding model.
 /// </summary>
 public class Bm25PassageRetriever : IPassageRetriever
 {

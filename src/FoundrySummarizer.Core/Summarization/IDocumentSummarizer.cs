@@ -5,16 +5,7 @@ namespace FoundrySummarizer.Core.Summarization;
 /// <summary>Input for a persona summary.</summary>
 /// <param name="Persona">Persona whose prompts and sampling settings shape the final summary.</param>
 /// <param name="DocumentText">Full extracted document text.</param>
-/// <param name="GroundingContext">Optional reference-policy block; empty when grounding is off.</param>
-/// <param name="AllowMultiPart">
-/// False forces a single model call even for long documents, e.g. when the request will be escalated
-/// to a large-context cloud model that can read the whole document at once.
-/// </param>
-public record SummarizationRequest(
-    PromptyDocument Persona,
-    string DocumentText,
-    string GroundingContext,
-    bool AllowMultiPart = true);
+public record SummarizationRequest(PromptyDocument Persona, string DocumentText);
 
 /// <summary>Outcome of a summary run.</summary>
 /// <param name="Summary">The persona-formatted summary text.</param>
@@ -31,6 +22,7 @@ public interface IDocumentSummarizer
     /// <param name="cancellationToken">Cancels outstanding model calls.</param>
     /// <returns>The summary and how it was produced.</returns>
     /// <exception cref="ArgumentException">The document text is empty.</exception>
+    /// <exception cref="Routing.LocalModelUnavailableException">No local model could answer.</exception>
     Task<SummarizationResult> SummarizeAsync(
         SummarizationRequest request,
         IProgress<string>? progress = null,

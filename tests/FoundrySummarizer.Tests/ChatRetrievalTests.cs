@@ -1,6 +1,5 @@
 using Microsoft.Extensions.AI;
-using FoundrySummarizer.Core.Agentic;
-using FoundrySummarizer.Core.Grounding;
+using FoundrySummarizer.Core.Chat;
 using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Routing;
 
@@ -79,7 +78,7 @@ public class ChatRetrievalTests
     public async Task ChatAgent_SendsOnlyRelevantPassagesWithCitationNumbers()
     {
         var client = new RecordingChatClient();
-        var agent = new InteractiveSummaryChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70, MaxAnswerTokens = 321 });
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70, MaxAnswerTokens = 321 });
         agent.InitializeSession("Plan.txt", BuildDocument(), "Ten workstreams are funded.");
 
         await agent.AskQuestionAsync("Who leads the security audit?");
@@ -98,7 +97,7 @@ public class ChatRetrievalTests
     public async Task ChatAgent_UsesPreviousQuestionForTermlessFollowUps()
     {
         var client = new RecordingChatClient();
-        var agent = new InteractiveSummaryChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70 });
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70 });
         agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
 
         await agent.AskQuestionAsync("Who leads the payroll upgrade?");
@@ -111,7 +110,7 @@ public class ChatRetrievalTests
     public async Task ChatAgent_KeepsOnlyRecentTurnsWithoutOldPassages()
     {
         var client = new RecordingChatClient();
-        var agent = new InteractiveSummaryChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70, MaxHistoryTurns = 2 });
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70, MaxHistoryTurns = 2 });
         agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
 
         foreach (var w in Workstreams.Take(5))
@@ -128,9 +127,65 @@ public class ChatRetrievalTests
     [Fact]
     public async Task ChatAgent_RequiresASession()
     {
-        var agent = new InteractiveSummaryChatAgent(new RecordingChatClient());
+        var agent = new DocumentChatAgent(new RecordingChatClient());
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => agent.AskQuestionAsync("Who leads it?"));
+    }
+
+    [Fact]
+    public async Task ChatAgent_NewSummaryKeepsTheConversation()
+    {
+        var client = new RecordingChatClient();
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70 });
+        agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
+        await agent.AskQuestionAsync("Who leads the security audit?");
+
+        agent.UpdateSummary("NEW SUMMARY");
+        await agent.AskQuestionAsync("Who leads the data migration?");
+
+        var last = client.Calls[^1].Messages;
+        Assert.Contains("NEW SUMMARY", last[0].Text);
+        Assert.Equal("Who leads the security audit?", last[1].Text);
+    }
+
+    [Fact]
+    public async Task ChatAgent_ClearingTheConversationKeepsTheDocument()
+    {
+        var client = new RecordingChatClient();
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70 });
+        agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
+        await agent.AskQuestionAsync("Who leads the security audit?");
+
+        agent.ClearConversation();
+        await agent.AskQuestionAsync("Who leads the payroll upgrade?");
+
+        Assert.True(agent.HasDocument);
+        Assert.Equal(2, client.Calls[^1].Messages.Count); // system + new question only
+        Assert.Contains("Aisha Khan", client.Calls[^1].Messages[^1].Text);
+    }
+
+    [Fact]
+    public async Task ChatAgent_FailedAnswerIsNotAddedToHistory()
+    {
+        var agent = new DocumentChatAgent(new FailingChatClient(), SmallPassageRetriever());
+        agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
+
+        await Assert.ThrowsAsync<LocalModelUnavailableException>(() => agent.AskQuestionAsync("Who leads the security audit?"));
+
+        Assert.Single(agent.ChatHistory); // only the system prompt
+    }
+
+    private sealed class FailingChatClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new LocalModelUnavailableException("Foundry Local is not running.");
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose() { }
     }
 
     private sealed class RecordingChatClient : IChatClient

@@ -70,18 +70,4 @@ public class ModelSelectionTests
         Assert.Empty(LocalModelCatalog.ParseModelIds("""{"status":"ok"}"""));
         Assert.Empty(LocalModelCatalog.ParseModelIds(""));
     }
-
-    [Fact]
-    public void Router_EscalatesOnlyWhenPrivacyOffAndCloudConfigured()
-    {
-        var options = new FoundryOptions { PrivacyMode = false, EscalationTokenThreshold = 1000 };
-        options.Cloud.ApiKey = "test-key";
-        var router = new HybridChatClientRouter(options);
-
-        Assert.True(router.WouldEscalateToCloud(5000));
-        Assert.False(router.WouldEscalateToCloud(500));
-
-        options.PrivacyMode = true;
-        Assert.False(router.WouldEscalateToCloud(5000));
-    }
 }

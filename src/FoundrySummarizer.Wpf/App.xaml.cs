@@ -1,13 +1,13 @@
-﻿using System.IO;
+using System.IO;
 using System.Windows;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using FoundrySummarizer.Core.Evaluation;
-using FoundrySummarizer.Core.Grounding;
+using FoundrySummarizer.Core.Chat;
 using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Wpf.Services;
 using FoundrySummarizer.Wpf.ViewModels;
 
 namespace FoundrySummarizer.Wpf;
@@ -20,44 +20,31 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
-        // 1. Build Configuration from appsettings.json, environment variables, etc.
-        var baseDir = AppContext.BaseDirectory;
-        var configBuilder = new ConfigurationBuilder()
-            .SetBasePath(baseDir)
-            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
-            .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production"}.json", optional: true)
-            .AddEnvironmentVariables();
-
-        // Also check parent directories for appsettings.json during development if needed
-        var rootConfig = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "appsettings.json"));
-        if (File.Exists(rootConfig))
-        {
-            configBuilder.AddJsonFile(rootConfig, optional: true, reloadOnChange: true);
-        }
-
-        var configuration = configBuilder.Build();
-
-        // 2. Bind Foundry Options
         var foundryOptions = new FoundryOptions();
-        configuration.GetSection(FoundryOptions.SectionName).Bind(foundryOptions);
+        BuildConfiguration().GetSection(FoundryOptions.SectionName).Bind(foundryOptions);
 
-        // 3. Configure Dependency Injection
         var services = new ServiceCollection();
-
-        services.AddSingleton<IConfiguration>(configuration);
         services.AddSingleton(foundryOptions);
+        services.AddSingleton(foundryOptions.Summarization);
+        services.AddSingleton(foundryOptions.Chat);
 
-        services.AddSingleton<HybridChatClientRouter>();
+        // One client for summaries and chat, so the Foundry Local service is found and the model loaded once.
+        services.AddSingleton<FoundryLocalChatClient>();
         services.AddSingleton<IDocumentIngestionPipeline, DocumentIngestionPipeline>();
         services.AddSingleton<IPromptyEngine, PromptyEngine>();
-        services.AddSingleton<IVectorGroundingService, VectorGroundingService>();
-        services.AddSingleton<IEvaluationPipeline, EvaluationPipeline>();
         services.AddSingleton<IDocumentSummarizer>(sp => new MultiPartSummarizer(
-            sp.GetRequiredService<HybridChatClientRouter>(),
+            sp.GetRequiredService<FoundryLocalChatClient>(),
             sp.GetRequiredService<IPromptyEngine>(),
-            foundryOptions.Summarization));
+            sp.GetRequiredService<SummarizationConfig>()));
+        services.AddSingleton(sp => new DocumentChatAgent(
+            sp.GetRequiredService<FoundryLocalChatClient>(),
+            config: sp.GetRequiredService<ChatConfig>()));
 
-        // Register ViewModels and MainWindow
+        services.AddSingleton<IDocumentPicker, OpenFileDocumentPicker>();
+        services.AddSingleton<IClipboardService, WpfClipboardService>();
+
+        services.AddSingleton<SummarizerViewModel>();
+        services.AddSingleton<ChatViewModel>();
         services.AddSingleton<MainViewModel>();
         services.AddSingleton<MainWindow>();
 
@@ -66,6 +53,24 @@ public partial class App : Application
         var mainWindow = _serviceProvider.GetRequiredService<MainWindow>();
         mainWindow.DataContext = _serviceProvider.GetRequiredService<MainViewModel>();
         mainWindow.Show();
+    }
+
+    /// <summary>appsettings(.{environment}).json next to the executable, then the repository root copy (for development), then environment variables.</summary>
+    private static IConfiguration BuildConfiguration()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var builder = new ConfigurationBuilder()
+            .SetBasePath(baseDir)
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+            .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") ?? "Production"}.json", optional: true);
+
+        var repoRootConfig = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "appsettings.json"));
+        if (File.Exists(repoRootConfig))
+        {
+            builder.AddJsonFile(repoRootConfig, optional: true, reloadOnChange: true);
+        }
+
+        return builder.AddEnvironmentVariables().Build();
     }
 
     protected override void OnExit(ExitEventArgs e)

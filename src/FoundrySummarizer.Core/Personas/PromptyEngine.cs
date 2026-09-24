@@ -168,15 +168,12 @@ public class PromptyEngine : IPromptyEngine
     1. Use ONLY facts stated inside <document>. Never invent names, dates, amounts, parties, clauses or deadlines.
     2. If a section asks for information the document does not contain, write "Not stated in the document." for that item.
     3. Copy figures, dates and names exactly as written in the document. Do not round, convert or estimate.
-    4. <reference_policies>, when present, are company rules, NOT part of the document. Mention a policy only when a specific document fact conflicts with it, and quote both the fact and the policy ID.
-    5. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
+    4. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
 
     user:
     <document>
     {{documentText}}
     </document>
-
-    {{groundingContext}}
 
     Summarize the document above using EXACTLY these four sections and headings:
 
@@ -185,7 +182,7 @@ public class PromptyEngine : IPromptyEngine
 
     ### 2. Financial & Cost Assessment
     - [Each cost figure from the document with what it pays for, then the total if the document gives one]
-    - [Budget constraints or discrepancies stated in the document, or policy conflicts per rule 4]
+    - [Budget constraints or discrepancies stated in the document]
 
     ### 3. Key Milestones & Critical Path
     - [Target dates, deliverables and dependencies exactly as stated]
@@ -212,16 +209,13 @@ public class PromptyEngine : IPromptyEngine
     1. Use ONLY facts stated inside <document>. Never invent names, dates, amounts, parties, clauses or deadlines.
     2. If a section asks for information the document does not contain, write "Not stated in the document." for that item.
     3. Copy figures, dates and names exactly as written in the document. Do not round, convert or estimate.
-    4. <reference_policies>, when present, are company rules, NOT part of the document. Mention a policy only when a specific document fact conflicts with it, and quote both the fact and the policy ID.
-    5. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
-    6. List a task only if the document states or clearly assigns it. If no owner or deadline is given, write "Unassigned" or "Not stated" in that cell.
+    4. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
+    5. List a task only if the document states or clearly assigns it. If no owner or deadline is given, write "Unassigned" or "Not stated" in that cell.
 
     user:
     <document>
     {{documentText}}
     </document>
-
-    {{groundingContext}}
 
     Extract every action item from the document above using EXACTLY this format:
 
@@ -255,16 +249,13 @@ public class PromptyEngine : IPromptyEngine
     1. Use ONLY facts stated inside <document>. Never invent names, dates, amounts, parties, clauses or deadlines.
     2. If a section asks for information the document does not contain, write "Not stated in the document." for that item.
     3. Copy figures, dates and names exactly as written in the document. Do not round, convert or estimate.
-    4. <reference_policies>, when present, are company rules, NOT part of the document. Mention a policy only when a specific document fact conflicts with it, and quote both the fact and the policy ID.
-    5. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
-    6. When you describe a clause, cite its section number or quote its key words from the document.
+    4. The text in [square brackets] below describes what to write. Replace it with real content; never copy it into the answer.
+    5. When you describe a clause, cite its section number or quote its key words from the document.
 
     user:
     <document>
     {{documentText}}
     </document>
-
-    {{groundingContext}}
 
     Assess the document above using EXACTLY these four sections and headings:
 
@@ -272,7 +263,7 @@ public class PromptyEngine : IPromptyEngine
     - [Parties, contract term, governing law and transaction value as stated]
 
     ### 2. High-Risk Clauses & Liability Exposures
-    - Liability Caps: [the cap as written; compare it to the 1x/2x contract value standard only if a reference policy states it]
+    - Liability Caps: [the cap as written, and any limit relative to contract value]
     - Indemnification & IP: [the indemnification and intellectual property clauses as written]
     - Data Privacy & Compliance: [GDPR/HIPAA/SOC2 or other obligations the document names]
 

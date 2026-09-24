@@ -3,9 +3,6 @@
     <Project Path="src/FoundrySummarizer.Core/FoundrySummarizer.Core.csproj" />
     <Project Path="src/FoundrySummarizer.Wpf/FoundrySummarizer.Wpf.csproj" />
   </Folder>
-  <Folder Name="/tools/">
-    <Project Path="tools/FoundrySummarizer.Benchmark/FoundrySummarizer.Benchmark.csproj" />
-  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FoundrySummarizer.Tests/FoundrySummarizer.Tests.csproj" />
   </Folder>

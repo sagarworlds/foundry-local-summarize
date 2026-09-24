@@ -32,7 +32,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
     private readonly SummarizationConfig _config;
     private readonly SemanticChunker _chunker;
 
-    /// <param name="chatClient">Model client (normally the hybrid router).</param>
+    /// <param name="chatClient">Model client (normally <see cref="Routing.FoundryLocalChatClient"/>).</param>
     /// <param name="promptyEngine">Renders the persona prompt for the final summary.</param>
     /// <param name="config">Token budgets; defaults are sized for 4K-context local models.</param>
     public MultiPartSummarizer(IChatClient chatClient, IPromptyEngine promptyEngine, SummarizationConfig? config = null)
@@ -63,26 +63,19 @@ public class MultiPartSummarizer : IDocumentSummarizer
         int partCount = 1;
         bool usedMultiPart = false;
 
-        if (request.AllowMultiPart && SemanticChunker.EstimateTokens(sourceText) > _config.MaxSinglePassTokens)
+        if (SemanticChunker.EstimateTokens(sourceText) > _config.MaxSinglePassTokens)
         {
-            var condensed = await CondenseAsync(sourceText, request.Persona, progress, cancellationToken);
-            if (condensed is { } notes)
-            {
-                sourceText = $"(Faithful notes taken from all {notes.PartCount} parts of a long document, in order.)\n\n{notes.Text}";
-                partCount = notes.PartCount;
-                usedMultiPart = true;
-            }
+            var notes = await CondenseAsync(sourceText, request.Persona, progress, cancellationToken);
+            sourceText = $"(Faithful notes taken from all {notes.PartCount} parts of a long document, in order.)\n\n{notes.Text}";
+            partCount = notes.PartCount;
+            usedMultiPart = true;
         }
 
         progress?.Report(usedMultiPart
             ? $"Writing the final summary from notes on {partCount} parts..."
             : "Generating summary...");
 
-        var variables = new Dictionary<string, string>
-        {
-            ["documentText"] = sourceText,
-            ["groundingContext"] = request.GroundingContext ?? string.Empty
-        };
+        var variables = new Dictionary<string, string> { ["documentText"] = sourceText };
         var messages = _promptyEngine.RenderChatMessages(request.Persona, variables);
         var response = await _chatClient.GetResponseAsync(messages, request.Persona.ToChatOptions(), cancellationToken);
 
@@ -93,8 +86,8 @@ public class MultiPartSummarizer : IDocumentSummarizer
     /// Replaces the document with per-part notes, repeating on the notes themselves until they fit the
     /// single-pass budget or <see cref="SummarizationConfig.MaxCondenseRounds"/> is reached.
     /// </summary>
-    /// <returns>The notes and the number of parts in the first pass, or null when no real model answered.</returns>
-    private async Task<(string Text, int PartCount)?> CondenseAsync(
+    /// <returns>The notes and the number of parts in the first pass.</returns>
+    private async Task<(string Text, int PartCount)> CondenseAsync(
         string text,
         PromptyDocument persona,
         IProgress<string>? progress,
@@ -117,13 +110,6 @@ public class MultiPartSummarizer : IDocumentSummarizer
                     : $"Condensing notes (pass {round}), part {i + 1} of {parts.Count}...");
 
                 var partNotes = await TakeNotesAsync(parts[i].Text, i + 1, parts.Count, persona, cancellationToken);
-                if (partNotes is null)
-                {
-                    // No real model answered (demo fallback). Notes from canned text would be meaningless,
-                    // so let the single-pass call produce the clearly labelled fallback output instead.
-                    return null;
-                }
-
                 if (partNotes.Length > 0)
                 {
                     notes.Add($"[Part {i + 1} of {parts.Count}]\n{partNotes}");
@@ -140,8 +126,8 @@ public class MultiPartSummarizer : IDocumentSummarizer
         return (text, firstPassParts);
     }
 
-    /// <returns>Notes for the part, an empty string if it had nothing relevant, or null if the answer came from the demo fallback.</returns>
-    private async Task<string?> TakeNotesAsync(
+    /// <returns>Notes for the part, or an empty string if it had nothing relevant.</returns>
+    private async Task<string> TakeNotesAsync(
         string partText,
         int partNumber,
         int partTotal,
@@ -174,12 +160,6 @@ public class MultiPartSummarizer : IDocumentSummarizer
         var options = new ChatOptions { Temperature = 0f, MaxOutputTokens = _config.MapMaxOutputTokens };
         var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
         var text = (response.Text ?? string.Empty).Trim();
-
-        if (text.StartsWith(HybridChatClientRouter.FallbackNotice.Trim(), StringComparison.Ordinal))
-        {
-            return null;
-        }
-
         return string.Equals(text, NoneMarker, StringComparison.OrdinalIgnoreCase) ? string.Empty : text;
     }
 }

@@ -31,7 +31,7 @@ public class SummarizationTests
         var client = new ScriptedChatClient((_, _) => "SUMMARY");
         var summarizer = new MultiPartSummarizer(client, new PromptyEngine(), SmallBudget);
 
-        var result = await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), "Budget is $150,000.", string.Empty));
+        var result = await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), "Budget is $150,000."));
 
         Assert.Equal("SUMMARY", result.Summary);
         Assert.False(result.UsedMultiPart);
@@ -49,7 +49,7 @@ public class SummarizationTests
             IsNoteRequest(messages) ? $"- note {++noteCalls}" : "FINAL");
         var summarizer = new MultiPartSummarizer(client, new PromptyEngine(), SmallBudget);
 
-        var result = await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20), "POLICY BLOCK"));
+        var result = await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20)));
 
         Assert.Equal("FINAL", result.Summary);
         Assert.True(result.UsedMultiPart);
@@ -62,11 +62,10 @@ public class SummarizationTests
         Assert.Contains("Section 20:", noteRequests[^1].Messages[1].Text);
         Assert.All(noteRequests, c => Assert.Equal(0f, c.Options?.Temperature));
 
-        // The final persona call receives the notes (not the raw document) plus the grounding block.
+        // The final persona call receives the notes, not the raw document.
         var finalPrompt = client.Calls[^1].Messages[^1].Text!;
         Assert.Contains("- note 1", finalPrompt);
         Assert.Contains($"[Part {result.PartCount} of {result.PartCount}]", finalPrompt);
-        Assert.Contains("POLICY BLOCK", finalPrompt);
         Assert.DoesNotContain("Section 20:", finalPrompt);
     }
 
@@ -76,36 +75,22 @@ public class SummarizationTests
         var client = new ScriptedChatClient((messages, _) => IsNoteRequest(messages) ? "NONE" : "FINAL");
         var summarizer = new MultiPartSummarizer(client, new PromptyEngine(), SmallBudget);
 
-        await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20), string.Empty));
+        await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20)));
 
         Assert.DoesNotContain("[Part 1 of", client.Calls[^1].Messages[^1].Text);
     }
 
     [Fact]
-    public async Task DemoFallbackDuringNoteTaking_FallsBackToSinglePass()
+    public async Task ModelFailureDuringNoteTaking_StopsWithTheReason()
     {
-        var client = new ScriptedChatClient((messages, _) =>
-            HybridChatClientRouter.FallbackNotice + (IsNoteRequest(messages) ? "canned notes" : "canned summary"));
+        var client = new ScriptedChatClient((_, _) => throw new LocalModelUnavailableException("Foundry Local is not running."));
         var summarizer = new MultiPartSummarizer(client, new PromptyEngine(), SmallBudget);
 
-        var result = await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20), string.Empty));
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
+            summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20))));
 
-        Assert.False(result.UsedMultiPart);
-        Assert.Equal(2, client.Calls.Count); // one abandoned note request, then the single labelled pass
-        Assert.StartsWith(HybridChatClientRouter.FallbackNotice, result.Summary);
-    }
-
-    [Fact]
-    public async Task MultiPartCanBeDisabledPerRequest()
-    {
-        var client = new ScriptedChatClient((_, _) => "FINAL");
-        var summarizer = new MultiPartSummarizer(client, new PromptyEngine(), SmallBudget);
-
-        var result = await summarizer.SummarizeAsync(
-            new SummarizationRequest(ExecutivePersona(), LongDocument(20), string.Empty, AllowMultiPart: false));
-
-        Assert.False(result.UsedMultiPart);
-        Assert.Single(client.Calls);
+        Assert.Equal("Foundry Local is not running.", ex.Message);
+        Assert.Single(client.Calls); // no further parts are attempted
     }
 
     [Fact]
@@ -114,7 +99,7 @@ public class SummarizationTests
         var summarizer = new MultiPartSummarizer(new ScriptedChatClient((_, _) => ""), new PromptyEngine(), SmallBudget);
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), "   ", string.Empty)));
+            summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), "   ")));
     }
 
     [Fact]

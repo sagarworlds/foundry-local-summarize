@@ -1,9 +1,8 @@
 using System.Text;
 using Microsoft.Extensions.AI;
-using FoundrySummarizer.Core.Grounding;
 using FoundrySummarizer.Core.Routing;
 
-namespace FoundrySummarizer.Core.Agentic;
+namespace FoundrySummarizer.Core.Chat;
 
 /// <summary>
 /// Answers follow-up questions about one document and its summary.
@@ -12,7 +11,7 @@ namespace FoundrySummarizer.Core.Agentic;
 /// on every turn overflowed small local models' context windows, which then truncated the input and
 /// answered from whatever was left.
 /// </summary>
-public class InteractiveSummaryChatAgent
+public class DocumentChatAgent
 {
     private readonly IChatClient _chatClient;
     private readonly IPassageRetriever _retriever;
@@ -23,6 +22,7 @@ public class InteractiveSummaryChatAgent
     private readonly List<ChatMessage> _turns = new();
     private ChatMessage? _systemMessage;
     private string? _previousQuestion;
+    private string _documentName = string.Empty;
 
     /// <summary>The system prompt followed by the retained question/answer turns.</summary>
     public IReadOnlyList<ChatMessage> ChatHistory =>
@@ -31,10 +31,13 @@ public class InteractiveSummaryChatAgent
     /// <summary>Passages sent with the most recent question, for display or debugging.</summary>
     public IReadOnlyList<RetrievedPassage> LastRetrievedPassages { get; private set; } = Array.Empty<RetrievedPassage>();
 
-    /// <param name="chatClient">Model client (normally the hybrid router).</param>
+    /// <summary>True once a document has been loaded with <see cref="InitializeSession"/>.</summary>
+    public bool HasDocument => _systemMessage is not null;
+
+    /// <param name="chatClient">Model client (normally <see cref="FoundryLocalChatClient"/>).</param>
     /// <param name="retriever">Passage retriever; defaults to BM25 over ~250-token passages.</param>
     /// <param name="config">Context budgets; defaults suit 4K-context local models.</param>
-    public InteractiveSummaryChatAgent(IChatClient chatClient, IPassageRetriever? retriever = null, ChatConfig? config = null)
+    public DocumentChatAgent(IChatClient chatClient, IPassageRetriever? retriever = null, ChatConfig? config = null)
     {
         _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         _retriever = retriever ?? new Bm25PassageRetriever();
@@ -52,10 +55,40 @@ public class InteractiveSummaryChatAgent
         LastRetrievedPassages = Array.Empty<RetrievedPassage>();
         _retriever.Index(documentText ?? string.Empty);
 
+        _documentName = documentName ?? string.Empty;
+        _systemMessage = BuildSystemMessage(_documentName, summaryText);
+    }
+
+    /// <summary>
+    /// Replaces the summary the model sees while keeping the conversation, e.g. after the user regenerates
+    /// the summary of the same document with another persona.
+    /// </summary>
+    /// <param name="summaryText">The new summary.</param>
+    /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
+    public void UpdateSummary(string summaryText)
+    {
+        if (_systemMessage is null)
+        {
+            throw new InvalidOperationException("Load a document before adding its summary.");
+        }
+
+        _systemMessage = BuildSystemMessage(_documentName, summaryText);
+    }
+
+    /// <summary>Clears the conversation but keeps the document and summary, so a fresh line of questioning can start.</summary>
+    public void ClearConversation()
+    {
+        _turns.Clear();
+        _previousQuestion = null;
+        LastRetrievedPassages = Array.Empty<RetrievedPassage>();
+    }
+
+    private static ChatMessage BuildSystemMessage(string documentName, string? summaryText)
+    {
         var summary = string.IsNullOrWhiteSpace(summaryText) ? "(No summary has been generated yet.)" : summaryText.Trim();
         var systemPrompt = $"""
-            You are an Interactive Document Intelligence Co-Pilot running locally on Microsoft Foundry Local.
-            You answer questions about the document '{documentName}'.
+            You are a document assistant running locally on Microsoft Foundry Local.
+            You answer follow-up questions about the document '{documentName}'.
 
             [GENERATED SUMMARY]
             {summary}
@@ -65,11 +98,10 @@ public class InteractiveSummaryChatAgent
             2. Cite the passages you used as [P#], for example: "The budget is $150,000 [P2]."
             3. Quote figures, dates and names exactly as written.
             4. If the passages and the summary do not contain the answer, reply "The document does not say." and do not guess.
-            5. When asked why a risk was flagged, point to the exact clause or number behind it.
-            6. Be concise and professional.
+            5. Be concise.
             """;
 
-        _systemMessage = new ChatMessage(ChatRole.System, systemPrompt);
+        return new ChatMessage(ChatRole.System, systemPrompt);
     }
 
     /// <summary>Answers <paramref name="question"/> using retrieved passages and recent turns.</summary>
@@ -77,6 +109,7 @@ public class InteractiveSummaryChatAgent
     /// <param name="cancellationToken">Cancels the model call.</param>
     /// <returns>The model's answer.</returns>
     /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
+    /// <exception cref="LocalModelUnavailableException">No local model could answer; the question is not added to the history.</exception>
     public async Task<string> AskQuestionAsync(string question, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question)) return string.Empty;
@@ -104,10 +137,9 @@ public class InteractiveSummaryChatAgent
     /// <summary>Clears the document, summary and conversation.</summary>
     public void Reset()
     {
-        _turns.Clear();
+        ClearConversation();
         _systemMessage = null;
-        _previousQuestion = null;
-        LastRetrievedPassages = Array.Empty<RetrievedPassage>();
+        _documentName = string.Empty;
         _retriever.Index(string.Empty);
     }
 

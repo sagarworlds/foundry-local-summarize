@@ -31,8 +31,7 @@ public class PersonaTests
 
         var vars = new Dictionary<string, string>
         {
-            ["documentText"] = "Proposal to invest $150,000 in local hardware.",
-            ["groundingContext"] = "NOTE: Exceeds $100k VP approval gate."
+            ["documentText"] = "Proposal to invest $150,000 in local hardware."
         };
 
         var messages = engine.RenderChatMessages(exec, vars);
@@ -40,7 +39,7 @@ public class PersonaTests
 
         var userMsg = messages[1].Text!;
         Assert.Contains("Proposal to invest $150,000", userMsg);
-        Assert.Contains("NOTE: Exceeds $100k", userMsg);
+        Assert.DoesNotContain("{{", userMsg);
     }
 
     [Fact]
@@ -107,16 +106,16 @@ public class PersonaTests
     [Fact]
     public void PromptyDocument_DoesNotExpandPlaceholdersInsideSubstitutedValues()
     {
-        var doc = new PromptyDocument { UserPromptTemplate = "<document>{{documentText}}</document>\n{{groundingContext}}" };
+        var doc = new PromptyDocument { UserPromptTemplate = "<document>{{documentText}}</document>\n{{persona}}" };
         var vars = new Dictionary<string, string>
         {
-            ["documentText"] = "Literal {{groundingContext}} in source.",
-            ["groundingContext"] = "POLICY"
+            ["documentText"] = "Literal {{persona}} in source.",
+            ["persona"] = "EXEC"
         };
 
         var rendered = doc.RenderUserPrompt(vars);
 
-        Assert.Equal("<document>Literal {{groundingContext}} in source.</document>\nPOLICY", rendered);
+        Assert.Equal("<document>Literal {{persona}} in source.</document>\nEXEC", rendered);
     }
 
     [Fact]

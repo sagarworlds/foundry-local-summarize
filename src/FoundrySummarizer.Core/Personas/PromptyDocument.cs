@@ -33,14 +33,6 @@ public record PromptyDocument
         MaxOutputTokens = ModelConfig.MaxTokens
     };
 
-    /// <summary>
-    /// Everything besides the document that the model was given for a summary: the persona's prompts and the
-    /// policy grounding block. The grounding evaluator treats facts found here as legitimately quotable.
-    /// </summary>
-    /// <param name="groundingContext">The policy block sent with the summary request; may be empty.</param>
-    public string BuildReferenceText(string? groundingContext) =>
-        string.Join("\n\n", SystemPrompt, UserPromptTemplate, groundingContext ?? string.Empty);
-
     public string RenderUserPrompt(IReadOnlyDictionary<string, string> variables) =>
         RenderTemplate(UserPromptTemplate, variables);
 
@@ -48,9 +40,8 @@ public record PromptyDocument
         RenderTemplate(SystemPrompt, variables);
 
     /// <summary>
-    /// Substitutes <c>{{name}}</c> placeholders in a single pass. Sequential string replacement would
-    /// re-scan already-inserted values, so a document that happens to contain "{{groundingContext}}"
-    /// would get the policy block injected into the middle of the source text.
+    /// Substitutes <c>{{name}}</c> placeholders in a single pass, so placeholder-like text inside an
+    /// inserted document is never re-scanned and stays exactly as written.
     /// </summary>
     private static string RenderTemplate(string template, IReadOnlyDictionary<string, string> variables) =>
         PlaceholderRegex.Replace(template, m =>
