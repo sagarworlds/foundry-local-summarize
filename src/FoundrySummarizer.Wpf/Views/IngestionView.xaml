@@ -34,7 +34,10 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="📂 Browse Document..." Style="{StaticResource PrimaryButton}" Command="{Binding BrowseFileCommand}" Margin="0,0,8,0" />
+                    <Button Content="📂 Browse Document..." Style="{StaticResource SecondaryButton}" Command="{Binding BrowseFileCommand}" Margin="0,0,8,0" />
+                    <!-- Next step after ingestion: opens the Persona Summarizer and generates a summary of this document. -->
+                    <Button Content="✨ Summarize This Document" Style="{StaticResource PrimaryButton}" Command="{Binding SummarizeDocumentCommand}"
+                            ToolTip="Open the Persona Summarizer and generate a summary of the ingested document" />
                 </StackPanel>
             </Grid>
         </Border>

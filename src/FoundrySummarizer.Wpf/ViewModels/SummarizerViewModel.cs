@@ -44,14 +44,19 @@ public partial class SummarizerViewModel : ObservableObject
 
     public ObservableCollection<PromptyDocument> AvailablePersonas { get; } = new();
 
-    public string CurrentDocumentText { get; set; } = string.Empty;
+    // Observable so the "Active Document" label updates when a new file is ingested; as plain properties
+    // the view kept showing the startup sample even though the new document's text had been loaded.
+    [ObservableProperty]
+    private string _currentDocumentText = string.Empty;
+
+    [ObservableProperty]
+    private string _currentDocumentName = string.Empty;
 
     /// <summary>
     /// The persona prompt and policy context used for the last summary. The evaluator treats facts found
     /// here as legitimately quotable, so citing a policy threshold is not reported as a hallucination.
     /// </summary>
     public string LastReferenceText { get; private set; } = string.Empty;
-    public string CurrentDocumentName { get; set; } = string.Empty;
 
     public event Action<string, string>? OnSummaryGenerated;
 
@@ -91,6 +96,23 @@ public partial class SummarizerViewModel : ObservableObject
             SystemPrompt = value.SystemPrompt;
             UserPromptTemplate = value.UserPromptTemplate;
         }
+    }
+
+    /// <summary>
+    /// Makes <paramref name="name"/> the document to summarize and clears the previous document's summary,
+    /// so a stale summary is never shown next to a newly loaded document.
+    /// </summary>
+    /// <param name="name">File or display name.</param>
+    /// <param name="text">Extracted document text.</param>
+    public void LoadDocument(string name, string text)
+    {
+        CurrentDocumentName = name;
+        CurrentDocumentText = text;
+        GeneratedSummary = string.Empty;
+        LastReferenceText = string.Empty;
+        GenerationStatus = string.IsNullOrWhiteSpace(text)
+            ? $"'{name}' contains no extractable text (a scanned PDF needs OCR first)."
+            : $"'{name}' loaded. Choose a persona and click Generate Summary.";
     }
 
     [RelayCommand]

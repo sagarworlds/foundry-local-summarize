@@ -148,7 +148,7 @@ The application features a modern Windows 11 Fluent Dark Theme:
 
 | Tab | Feature Description |
 |---|---|
-| **📄 Ingestion Pipeline** | Drag-and-drop file upload (`.docx`, `.pptx`, `.pdf`, `.txt`, `.mp3`), token/character counters, raw text preview, and semantic chunk breakdown list. |
+| **📄 Ingestion Pipeline** | File upload (`.docx`, `.pptx`, `.pdf`, `.txt`, `.mp3`), token/character counters, raw text preview, and semantic chunk breakdown list. **✨ Summarize This Document** opens the Persona Summarizer and generates a summary of the ingested file. |
 | **✨ Persona Summarizer** | Select summary profile (*Executive Bullets*, *Action Items*, *Legal*), toggle RAG grounding, view routing decision card ($0.00 cost), and edit Prompty templates live. |
 | **🧠 Semantic Grounding** | Inspect indexed policies in `Microsoft.Extensions.VectorData`, test live cosine similarity matching, and index new corporate policies. |
 | **🤖 Agentic Workflows** | One-click trigger for Auto-Filing Agent with 4-step pipeline status cards and real-time function calling audit logs. |

@@ -88,12 +88,23 @@ public partial class MainViewModel : ObservableObject
         IngestionVm.OnDocumentIngested += result =>
         {
             CurrentDocumentName = result.FileName;
-            SummarizerVm.CurrentDocumentName = result.FileName;
-            SummarizerVm.CurrentDocumentText = result.ExtractedText;
+            // Loading clears the previous document's summary, so the tabs below get an empty summary
+            // rather than one that belongs to a different document.
+            SummarizerVm.LoadDocument(result.FileName, result.ExtractedText);
 
             AgenticVm.UpdateContext(result.FileName, result.ExtractedText, SummarizerVm.GeneratedSummary);
             EvaluationVm.UpdateContext(result.FileName, SummarizerVm.SelectedPersona?.Name ?? "Executive Bullets", result.ExtractedText, SummarizerVm.GeneratedSummary, SummarizerVm.LastReferenceText);
             ChatVm.InitializeSession(result.FileName, result.ExtractedText, SummarizerVm.GeneratedSummary);
+        };
+
+        // "Summarize This Document" on the ingestion screen: go to the summarizer and start generating.
+        IngestionVm.OnSummarizeRequested += async () =>
+        {
+            SelectedTabIndex = 1;
+            if (SummarizerVm.GenerateSummaryCommand.CanExecute(null))
+            {
+                await SummarizerVm.GenerateSummaryCommand.ExecuteAsync(null);
+            }
         };
 
         // Sync summarization events
@@ -203,8 +214,7 @@ public partial class MainViewModel : ObservableObject
         """;
 
         CurrentDocumentName = "sample_meeting_transcript.txt";
-        SummarizerVm.CurrentDocumentName = "sample_meeting_transcript.txt";
-        SummarizerVm.CurrentDocumentText = defaultText;
+        SummarizerVm.LoadDocument("sample_meeting_transcript.txt", defaultText);
 
         _ = IngestionVm.IngestTextContentAsync(defaultText, "sample_meeting_transcript.txt");
         _ = SummarizerVm.GenerateSummaryAsync();

@@ -29,9 +29,20 @@ public partial class IngestionViewModel : ObservableObject
     [ObservableProperty]
     private bool _isBusy;
 
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SummarizeDocumentCommand))]
+    private bool _hasDocument;
+
     public ObservableCollection<DocumentChunk> Chunks { get; } = new();
 
     public event Action<IngestionResult>? OnDocumentIngested;
+
+    /// <summary>Raised when the user asks to summarize the ingested document from this screen.</summary>
+    public event Action? OnSummarizeRequested;
+
+    /// <summary>Hands the ingested document to the summarizer (the shell switches tabs and starts generation).</summary>
+    [RelayCommand(CanExecute = nameof(HasDocument))]
+    public void SummarizeDocument() => OnSummarizeRequested?.Invoke();
 
     public IngestionViewModel(IDocumentIngestionPipeline pipeline)
     {
@@ -80,11 +91,15 @@ public partial class IngestionViewModel : ObservableObject
                 Chunks.Add(chunk);
             }
 
-            StatusMessage = $"Successfully ingested {result.FileName} ({result.Chunks.Count} chunks, ~{result.EstimatedTokens:N0} tokens)";
+            HasDocument = !string.IsNullOrWhiteSpace(result.ExtractedText);
+            StatusMessage = HasDocument
+                ? $"Successfully ingested {result.FileName} ({result.Chunks.Count} chunks, ~{result.EstimatedTokens:N0} tokens). Click 'Summarize This Document' to continue."
+                : $"No text could be extracted from {result.FileName}. If it is a scanned PDF, run OCR on it first.";
             OnDocumentIngested?.Invoke(result);
         }
         catch (Exception ex)
         {
+            HasDocument = false;
             StatusMessage = $"Ingestion Error: {ex.Message}";
         }
         finally
@@ -112,6 +127,7 @@ public partial class IngestionViewModel : ObservableObject
                 Chunks.Add(chunk);
             }
 
+            HasDocument = !string.IsNullOrWhiteSpace(result.ExtractedText);
             StatusMessage = $"Successfully ingested {documentName} ({result.Chunks.Count} chunks, ~{result.EstimatedTokens:N0} tokens)";
             OnDocumentIngested?.Invoke(result);
         }
