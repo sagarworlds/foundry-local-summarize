@@ -39,6 +39,15 @@ jobs:
           --blame-hang-timeout 2m
           --results-directory TestResults
 
+      - name: Test the WPF layer
+        # Views, converters, services and startup wiring; these need Windows, so they run only here.
+        run: >
+          dotnet test tests/FoundrySummarizer.Wpf.Tests/FoundrySummarizer.Wpf.Tests.csproj -c Release --no-build
+          --logger "trx;LogFileName=wpf-test-results.trx"
+          --collect:"XPlat Code Coverage"
+          --blame-hang-timeout 2m
+          --results-directory TestResults
+
       - name: Upload test results and coverage
         if: always()
         uses: actions/upload-artifact@v4

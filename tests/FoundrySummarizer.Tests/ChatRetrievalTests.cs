@@ -75,6 +75,16 @@ public class ChatRetrievalTests
     }
 
     [Fact]
+    public void Retriever_ReturnsNothing_BeforeADocumentIsIndexed_OrWithNoBudget()
+    {
+        var retriever = SmallPassageRetriever();
+        Assert.Empty(retriever.Retrieve("Who leads the data migration?", maxTokens: 70));   // nothing indexed
+
+        retriever.Index(BuildDocument());
+        Assert.Empty(retriever.Retrieve("Who leads the data migration?", maxTokens: 0));
+    }
+
+    [Fact]
     public async Task ChatAgent_SendsOnlyRelevantPassagesWithCitationNumbers()
     {
         var client = new RecordingChatClient();

@@ -328,7 +328,15 @@ public sealed class FoundryLocalService : IDisposable
     /// <param name="transport">HTTP transport; tests pass a fake, null uses the default.</param>
     public static IChatClient CreateChatClient(Uri endpoint, string modelId, TimeSpan networkTimeout, PipelineTransport? transport = null)
     {
-        var clientOptions = new OpenAIClientOptions { Endpoint = endpoint, NetworkTimeout = networkTimeout };
+        var clientOptions = new OpenAIClientOptions
+        {
+            Endpoint = endpoint,
+            NetworkTimeout = networkTimeout,
+            // The SDK retries timeouts and connection errors 3 times by default. A local model that timed out is still
+            // busy with the same request, so each retry waits the full timeout again (4 × 300s by default) before the
+            // user sees anything. The app reloads the model itself when it was unloaded (see FoundryLocalChatClient).
+            RetryPolicy = new ClientRetryPolicy(maxRetries: 0)
+        };
         if (transport is not null) clientOptions.Transport = transport;
         clientOptions.AddPolicy(new MaxTokensCompatibilityPolicy(), PipelinePosition.PerCall);
 

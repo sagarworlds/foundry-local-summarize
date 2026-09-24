@@ -32,6 +32,10 @@ public class ReasoningOutputTests
         Assert.Same(qwen3, ReasoningOutputFilter.SuppressThinking("qwen3-0.6b-generic-gpu:1", qwen3)); // not added twice
 
         Assert.Same(messages, ReasoningOutputFilter.SuppressThinking("Phi-4-mini-instruct-generic-gpu:5", messages));
+
+        // Nothing to attach the directive to: the messages are sent as they are.
+        var systemOnly = new List<ChatMessage> { new(ChatRole.System, "sys") };
+        Assert.Same(systemOnly, ReasoningOutputFilter.SuppressThinking("qwen3-0.6b-generic-gpu:1", systemOnly));
     }
 
     private static (FoundryLocalChatClient Client, List<string> Bodies) ClientAnswering(string modelId, string answer)

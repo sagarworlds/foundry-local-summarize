@@ -73,6 +73,33 @@ public class PersonaTests
         Assert.Contains("CODE REPOSITORY:", doc.UserPromptTemplate);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void PromptyEngine_RejectsEmptyContent(string content)
+    {
+        var ex = Assert.Throws<ArgumentException>(() => new PromptyEngine().Parse(content));
+        Assert.Equal("promptyContent", ex.ParamName);
+    }
+
+    [Fact]
+    public void PromptyEngine_ParsesAPromptyWithOnlyASystemSection()
+    {
+        var doc = new PromptyEngine().Parse("""
+        ---
+        name: System Only
+        model:
+          api: completion
+        ---
+        system:
+        Always answer in one sentence.
+        """);
+
+        Assert.Equal("Always answer in one sentence.", doc.SystemPrompt);
+        Assert.Equal(string.Empty, doc.UserPromptTemplate);
+        Assert.Equal("completion", doc.ModelConfig.Api);
+    }
+
     [Fact]
     public void PromptyDocument_ToChatOptions_CarriesPersonaSamplingSettings()
     {

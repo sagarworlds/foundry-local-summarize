@@ -280,6 +280,25 @@ public class FailurePathTests
         Assert.Contains("/v1/models returned unreadable JSON", list.Problem);
     }
 
+    [Fact]
+    public async Task OpenAICompatibleServer_LoadsModelsOnFirstUse_SoLoadingIsANoOp()
+    {
+        var api = new OpenAICompatibleApi(new HttpClient(new Server(_ => Json("{}"), authority: "localhost:11434")), new Uri("http://localhost:11434"));
+
+        Assert.False(api.SupportsLoading);
+        Assert.Null(await api.LoadAsync("llama3.2:3b", CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("""["a", 1, null, {"x":"y"}, {"id":7}, {"name":"b"}, " "]""", new[] { "a", "b" })]
+    [InlineData("""{"data":[{"id":"c"}]}""", new[] { "c" })]
+    [InlineData("""{"models":[]}""", new string[0])]
+    [InlineData("", new string[0])]
+    public void ModelListParser_KeepsOnlyUsableIds(string json, string[] expected)
+    {
+        Assert.Equal(expected, ModelListParser.ParseModelIds(json));
+    }
+
     // ---- Chat requests ----
 
     private static FoundryLocalChatClient ChatClientFor(Func<string, HttpResponseMessage> chat, Func<string, HttpResponseMessage>? load = null)
@@ -327,16 +346,90 @@ public class FailurePathTests
         {
             var text = string.Concat(await client.GetStreamingResponseAsync(new[] { new ChatMessage(ChatRole.User, "Hi") }).Select(u => u.Text).ToListAsync());
             Assert.Equal("Hello", text);
+            Assert.Equal(new Uri("http://127.0.0.1:56294/v1"), client.ActiveEndpoint);         // the discovered one
             Assert.Same(client, client.GetService(typeof(FoundryLocalChatClient)));
         }
 
         var options = Options();
         using var offline = new FoundryLocalChatClient(options, new FoundryLocalService(options, new Cli(_ => new FoundryCliResult(false, "", "not installed")),
             new Server(_ => Json("{}"), authority: "nowhere:1")));
+        Assert.Equal(new Uri(options.GetEffectiveLocalEndpoint()), offline.ActiveEndpoint);   // nothing found yet: the configured one
         await Assert.ThrowsAsync<LocalModelUnavailableException>(async () =>
         {
             await foreach (var _ in offline.GetStreamingResponseAsync(new[] { new ChatMessage(ChatRole.User, "Hi") })) { }
         });
+    }
+
+    [Fact]
+    public async Task Chat_Streaming_ThatFailsAtTheServer_SaysWhy()
+    {
+        using var client = ChatClientFor(_ => Json("""{"error":{"message":"Model not found"}}""", HttpStatusCode.NotFound));
+
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(async () =>
+        {
+            await foreach (var _ in client.GetStreamingResponseAsync(new[] { new ChatMessage(ChatRole.User, "Hi") })) { }
+        });
+
+        Assert.Contains("does not know model 'phi-4-mini'", ex.Message);
+    }
+
+    [Fact]
+    public async Task Chat_ThatNeverAnswers_TimesOutWithAHint()
+    {
+        var options = Options(o => o.TimeoutSeconds = 1);
+        var server = new Server(async (path, token) =>
+        {
+            if (path != "/v1/chat/completions") return FoundryServer(loaded: _ => Json("""["Phi-4-mini-instruct-generic-gpu:5"]"""))(path);
+            await Task.Delay(Timeout.Infinite, token);    // ended by the client's network timeout
+            return Json("{}");
+        });
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, Cli.Running(), server));
+        client.SelectModel("phi-4-mini");
+
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() => client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Hi") }));
+
+        Assert.Contains("did not answer within 1s", ex.Message);
+        Assert.Contains("TimeoutSeconds", ex.Message);
+    }
+
+    [Fact]
+    public void MaxTokensPolicy_RewritesSynchronousRequestsToo()
+    {
+        // The SDK's synchronous methods use Process instead of ProcessAsync; both must send max_tokens.
+        var handler = new CapturingHandler();
+        var pipeline = System.ClientModel.Primitives.ClientPipeline.Create(
+            new System.ClientModel.Primitives.ClientPipelineOptions
+            {
+                Transport = new System.ClientModel.Primitives.HttpClientPipelineTransport(new HttpClient(handler)),
+                RetryPolicy = new System.ClientModel.Primitives.ClientRetryPolicy(maxRetries: 0)
+            },
+            perCallPolicies: new System.ClientModel.Primitives.PipelinePolicy[] { new MaxTokensCompatibilityPolicy() },
+            perTryPolicies: ReadOnlySpan<System.ClientModel.Primitives.PipelinePolicy>.Empty,
+            beforeTransportPolicies: ReadOnlySpan<System.ClientModel.Primitives.PipelinePolicy>.Empty);
+        var message = pipeline.CreateMessage();
+        message.Request.Method = "POST";
+        message.Request.Uri = new Uri("http://127.0.0.1:56294/v1/chat/completions");
+        message.Request.Content = System.ClientModel.BinaryContent.Create(BinaryData.FromString("""{"model":"m","max_completion_tokens":50}"""));
+
+        pipeline.Send(message);
+
+        Assert.Contains("\"max_tokens\":50", handler.Body);
+        Assert.DoesNotContain("max_completion_tokens", handler.Body);
+    }
+
+    /// <summary>Records the body of a synchronous request.</summary>
+    private sealed class CapturingHandler : HttpMessageHandler
+    {
+        public string Body { get; private set; } = string.Empty;
+
+        protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Body = request.Content?.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult() ?? string.Empty;
+            return Json("{}");
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(Send(request, cancellationToken));
     }
 
     // ---- The real CLI wrapper and the legacy daemon file ----
@@ -360,6 +453,42 @@ public class FailurePathTests
         Assert.Contains("'definitely-not-installed-cli-xyz' command was not found", missing.Problem);
 
         Assert.Throws<ArgumentException>(() => new FoundryCli(" "));
+    }
+
+    [Fact]
+    public async Task FoundryCli_StopsACommandThatHangs()
+    {
+        // A command that takes 30s stands in for a CLI that hangs (e.g. waiting on a stuck service).
+        var (executable, arguments) = OperatingSystem.IsWindows() ? ("ping", "-n 30 127.0.0.1") : ("sleep", "30");
+        var started = DateTime.UtcNow;
+
+        var result = await new FoundryCli(executable).RunAsync(arguments, TimeSpan.FromSeconds(1));
+
+        Assert.False(result.Succeeded);
+        Assert.Contains($"'{executable} {arguments}' did not finish within 1s", result.Problem);
+        Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(20), "The hung command was not stopped.");
+    }
+
+    [Fact]
+    public void DaemonFile_IsUsedWhenDiscoveryIsOn_AndIgnoredWhenOff()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"daemon-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, """{"web_urls":["http://127.0.0.1:5273/"]}""");
+        try
+        {
+            var options = new FoundryOptions();
+            options.Local.Endpoint = "http://localhost:11434/v1";
+
+            options.Local.AutoDiscover = true;
+            Assert.Equal("http://127.0.0.1:5273/v1", options.GetEffectiveLocalEndpoint(path));
+
+            options.Local.AutoDiscover = false;
+            Assert.Equal("http://localhost:11434/v1", options.GetEffectiveLocalEndpoint(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Theory]

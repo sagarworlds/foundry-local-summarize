@@ -2,9 +2,13 @@
 
 namespace FoundrySummarizer.Core.Personas;
 
+/// <summary>The <c>model</c> section of a .prompty file.</summary>
+/// <param name="Api">The API style; only "chat" is used.</param>
+/// <param name="Temperature">Sampling temperature.</param>
+/// <param name="MaxTokens">Maximum output tokens.</param>
+/// <param name="TopP">Nucleus sampling cut-off.</param>
 public record PromptyModelConfig(
     string? Api = "chat",
-    string? ModelName = null,
     double Temperature = 0.2,
     int MaxTokens = 1500,
     double TopP = 0.95

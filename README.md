@@ -248,11 +248,17 @@ Alternatively, open `FoundrySummarizer.slnx` in Visual Studio and press **F5**. 
 ### Test
 
 ```powershell
-dotnet test tests/FoundrySummarizer.Tests/FoundrySummarizer.Tests.csproj
+dotnet test FoundrySummarizer.slnx
 ```
 
-The tests do not require Foundry Local or a model: the server, the `foundry` CLI and the model are replaced by
-in-process fakes, and the suite runs in a few seconds. It covers:
+There are two test projects:
+
+- `tests/FoundrySummarizer.Tests` covers the core library and the view models. It runs on any OS and does not
+  require Foundry Local or a model: the server, the `foundry` CLI and the model are replaced by in-process fakes,
+  and the suite runs in a few seconds.
+- `tests/FoundrySummarizer.Wpf.Tests` covers the WPF layer and runs on Windows only.
+
+Together they cover:
 
 | Area | Scenarios |
 |---|---|
@@ -260,8 +266,17 @@ in-process fakes, and the suite runs in a few seconds. It covers:
 | Summaries | Single-pass and multi-part summaries, summary styles, prompt rendering, removal of `<think>` reasoning |
 | Chat | Passage retrieval and citations, conversation history, suggested questions, edge cases (no matching passage, blank question) |
 | Foundry Local | Discovery and start (1.x+ and 0.x CLIs), version detection, model listing, loading, unloading and load confirmation, reload after idle unload, port changes, Ollama-style servers |
-| Failures | Unreachable or stopped service, failed start, unknown or undownloaded models, load errors and timeouts, unreadable responses, request errors |
-| Screens | Summarize tab, Chat tab, model selector (startup, switching, remembered model, loading state, recovery from outages) and main-window wiring |
+| Failures | Unreachable or stopped service, failed start, unknown or undownloaded models, load errors and timeouts, answers that time out, streaming errors, a hung `foundry` command, unreadable responses, request errors |
+| Screens | Summarize tab, Chat tab (including cancelling a question), model selector (startup, switching, failed unload or save, remembered and configured models, loading state, recovery from outages and unexpected errors) and main-window wiring |
+| Desktop app (Windows) | Every view loads with the app's styles and every binding resolves; startup settings and dependency-injection wiring; converters, the Open dialog filter and the clipboard |
+
+Tests against a real Foundry Local are skipped by default. To run them, download a chat model
+(for example `foundry model download phi-4-mini`) and then run:
+
+```powershell
+$env:FOUNDRY_LOCAL_TESTS = "1"
+dotnet test tests/FoundrySummarizer.Tests --filter LocalFoundryIntegrationTests
+```
 
 Every push and pull request is built and tested by the [CI workflow](.github/workflows/ci.yml).
 
@@ -301,7 +316,8 @@ The installer is written to `installer\Output\` and is not committed to source c
 │   └── FoundrySummarizer.Wpf/           WPF desktop application
 │       ├── Views/                       Summarize and Chat tabs
 │       └── Services/                    Windows file picker and clipboard
-├── tests/FoundrySummarizer.Tests/       xUnit tests
+├── tests/FoundrySummarizer.Tests/       xUnit tests for the core library and view models (any OS)
+├── tests/FoundrySummarizer.Wpf.Tests/   xUnit tests for the WPF views and startup wiring (Windows)
 ├── samples/                             Sample documents
 ├── installer/setup.iss                  Inno Setup script
 ├── build_installer.ps1                  Local installer build script

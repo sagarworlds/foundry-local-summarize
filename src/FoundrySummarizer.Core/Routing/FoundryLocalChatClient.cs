@@ -194,7 +194,7 @@ public sealed class FoundryLocalChatClient : IChatClient
         ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested;
 
     /// <summary>Turns a failed model request into an actionable reason (timeouts and unknown models are the common cases).</summary>
-    private string DescribeRequestFailure(Exception ex) => ex switch
+    private string DescribeRequestFailure(Exception ex) => FirstFailure(ex) switch
     {
         OperationCanceledException or TimeoutException =>
             $"Model '{ActiveModelId}' did not answer within {_options.Local.TimeoutSeconds}s. Increase Foundry:Local:TimeoutSeconds in appsettings.json or use a smaller or GPU model.",
@@ -207,8 +207,12 @@ public sealed class FoundryLocalChatClient : IChatClient
             "or Foundry:Chat:MaxPassageTokens in appsettings.json, or choose a model with a larger context window.",
         System.ClientModel.ClientResultException { Status: 400 } rejected =>
             $"Model '{ActiveModelId}' rejected the request (HTTP 400){ServerDetail(rejected)}",
-        _ => $"The request to model '{ActiveModelId}' failed: {ex.Message.Split('\n')[0].Trim()}"
+        var other => $"The request to model '{ActiveModelId}' failed: {other.Message.Split('\n')[0].Trim()}"
     };
+
+    // A retry policy reports its failed attempts as one AggregateException; the first attempt says what went wrong.
+    private static Exception FirstFailure(Exception ex) =>
+        ex is AggregateException { InnerExceptions.Count: > 0 } aggregate ? FirstFailure(aggregate.InnerExceptions[0]) : ex;
 
     private static bool IsModelNotLoaded(System.ClientModel.ClientResultException ex) =>
         ex.Status == 400 && RawBody(ex).Contains("not loaded", StringComparison.OrdinalIgnoreCase);

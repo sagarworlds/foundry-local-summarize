@@ -134,6 +134,29 @@ public class SummarizationTests
         Assert.DoesNotContain("Alpha", chunks[1].Text);
     }
 
+    [Fact]
+    public async Task NotesThatNeverShrinkEnough_StopAfterTheRoundLimit_AndAreStillSummarized()
+    {
+        // Every note is longer than the part it came from, so no number of rounds brings the notes under budget.
+        var longNote = "- " + new string('n', 1000);
+        int noteCalls = 0;
+        var client = new ScriptedChatClient((messages, _) =>
+        {
+            if (!IsNoteRequest(messages)) return "FINAL";
+            noteCalls++;
+            return longNote;
+        });
+        var summarizer = new MultiPartSummarizer(client, new PromptyEngine(), SmallBudget);
+
+        var result = await summarizer.SummarizeAsync(new SummarizationRequest(ExecutivePersona(), LongDocument(20)));
+
+        Assert.Equal("FINAL", result.Summary);
+        Assert.True(noteCalls > result.PartCount);                         // a second (last) round ran on the notes
+        var final = client.Calls[^1];
+        Assert.False(IsNoteRequest(final.Messages));
+        Assert.Contains("[Part 1 of", final.Messages[^1].Text);           // the final summary is written from the notes
+    }
+
     private sealed class ScriptedChatClient : IChatClient
     {
         private readonly Func<IList<ChatMessage>, ChatOptions?, string> _respond;

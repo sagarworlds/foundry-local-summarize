@@ -37,6 +37,33 @@ public class IngestionTests
     }
 
     [Fact]
+    public void SemanticChunker_NamesChunksAfterTheDocument()
+    {
+        var chunks = new SemanticChunker(maxTokensPerChunk: 50, overlapTokens: 0)
+            .ChunkText(string.Join("\n\n", Enumerable.Repeat(new string('a', 150), 3)), "minutes");
+
+        Assert.Equal(new[] { "minutes-chunk-0", "minutes-chunk-1", "minutes-chunk-2" }, chunks.Select(c => c.Id));
+        Assert.All(chunks, c => Assert.Equal("minutes", c.DocumentId));
+    }
+
+    [Fact]
+    public void SemanticChunker_DropsTheOverlap_WhenItWouldPushAChunkOverBudget()
+    {
+        // Paragraph 1 is ~45 tokens of short sentences, so its last sentences become the overlap (up to 25 tokens).
+        // Paragraph 2 is ~48 tokens: overlap + paragraph 2 exceeds the 50-token budget, so the overlap must go.
+        var first = "Alpha opens the budget review now. Beta covers the staffing plan today. Gamma lists the open risks here. Delta closes with the next deadline.";
+        var second = new string('z', 190);
+        var chunker = new SemanticChunker(maxTokensPerChunk: 50, overlapTokens: 25);
+
+        var chunks = chunker.ChunkText($"{first}\n\n{second}", "doc");
+
+        Assert.Equal(2, chunks.Count);
+        Assert.Equal(first, chunks[0].Text);
+        Assert.Equal(second, chunks[1].Text);                              // no "Delta ..." carried over
+        Assert.All(chunks, c => Assert.True(c.TokenCount <= 50));
+    }
+
+    [Fact]
     public async Task DocxDocumentParser_ExtractsParagraphsAndGeneratesSample()
     {
         // Generate real sample docx in samples folder
