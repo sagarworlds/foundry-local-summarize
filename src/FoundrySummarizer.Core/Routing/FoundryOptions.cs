@@ -106,10 +106,14 @@ public class FoundryOptions
     /// The endpoint to try when CLI discovery finds nothing: the address recorded in the legacy
     /// ~/.foundry/daemon.json (when discovery is on), otherwise <see cref="LocalFoundryConfig.Endpoint"/>.
     /// </summary>
-    public string GetEffectiveLocalEndpoint()
+    public string GetEffectiveLocalEndpoint() => GetEffectiveLocalEndpoint(DefaultDaemonFilePath);
+
+    /// <summary>As <see cref="GetEffectiveLocalEndpoint()"/>, reading the daemon file at <paramref name="daemonFilePath"/>.</summary>
+    /// <param name="daemonFilePath">Where the legacy daemon file is; tests point this at a file they control.</param>
+    public string GetEffectiveLocalEndpoint(string daemonFilePath)
     {
         bool isAuto = string.Equals(Local.Endpoint, "auto", StringComparison.OrdinalIgnoreCase);
-        if ((Local.AutoDiscover || isAuto) && TryReadDaemonFileEndpoint() is { } fromDaemonFile)
+        if ((Local.AutoDiscover || isAuto) && ReadDaemonFileEndpoint(daemonFilePath) is { } fromDaemonFile)
         {
             return fromDaemonFile;
         }
@@ -131,8 +135,8 @@ public class FoundryOptions
         set => Local.ModelId = value;
     }
 
-    private static string? TryReadDaemonFileEndpoint() =>
-        ReadDaemonFileEndpoint(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".foundry", "daemon.json"));
+    private static string DefaultDaemonFilePath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".foundry", "daemon.json");
 
     /// <summary>
     /// Reads the service address that older Foundry Local versions wrote to <c>~/.foundry/daemon.json</c>.

@@ -534,6 +534,55 @@ public class FoundryLocalServiceTests
     }
 
     [Fact]
+    public async Task Reports_AServiceThatMovedToANewPortThatDoesNotAnswerEither()
+    {
+        int statusCall = 0;
+        var cli = new FakeCli((_, _) => new FoundryCliResult(true,
+            ++statusCall == 1 ? RunningStatus : RunningStatus.Replace("5273", "6001"), null));
+        var server = new FakeServer(Array.Empty<string>(), _ => FakeServer.Json("[]"));   // nothing answers
+        using var service = new FoundryLocalService(Options(), cli, server);
+
+        var status = await service.CheckAsync(ensureModelLoaded: false);
+
+        Assert.False(status.IsAvailable);
+        Assert.Contains("6001", status.Problem);                          // the new address was tried too
+    }
+
+    [Fact]
+    public async Task LegacyService_ExplainsAnUnreadableModelList()
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            "/openai/status" or "/openai/loadedmodels" => FakeServer.Json("[]"),
+            "/openai/models" => FakeServer.Json("{broken"),
+            _ => FakeServer.NotFound()
+        });
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        var list = await service.ListModelsAsync();
+
+        Assert.Empty(list.Models);
+        Assert.Contains("/openai/models returned unreadable JSON", list.Problem);
+    }
+
+    [Fact]
+    public async Task LegacyService_UsesModelIdsAsListed_WhenTheCatalogIsUnreadable()
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            "/openai/status" or "/openai/loadedmodels" => FakeServer.Json("[]"),
+            "/openai/models" => FakeServer.Json("""["Phi-4-mini-instruct-generic-gpu"]"""),
+            "/foundry/list" => FakeServer.Json("{broken"),
+            _ => FakeServer.NotFound()
+        });
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        var list = await service.ListModelsAsync();
+
+        Assert.Equal(new[] { "Phi-4-mini-instruct-generic-gpu" }, list.Models.Select(m => m.Id));   // no catalog version added
+    }
+
+    [Fact]
     public async Task Works_WithOllamaStyleServerWithoutFoundryRoutes()
     {
         var server = new FakeServer(new[] { "localhost:11434" }, path => path == "/v1/models"

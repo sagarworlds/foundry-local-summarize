@@ -35,8 +35,10 @@ internal static class Screen
     public sealed class Settings : IUserSettingsStore
     {
         public UserSettings Saved { get; set; } = new();
+        /// <summary>When set, saving "fails" with this reason (the choice is still kept in memory).</summary>
+        public string? Problem { get; set; }
         public UserSettings Load() => Saved;
-        public string? Save(UserSettings settings) { Saved = settings; return null; }
+        public string? Save(UserSettings settings) { Saved = settings; return Problem; }
     }
 
     public sealed class Picker(string? path) : IDocumentPicker
@@ -67,6 +69,20 @@ internal static class Screen
         {
             Calls++;
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, answer(messages.ToList()))));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>A model that never answers on its own; only cancellation ends the request.</summary>
+    public sealed class SilentModel : IChatClient
+    {
+        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            throw new InvalidOperationException("unreachable");
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
@@ -288,6 +304,22 @@ public class SummarizerScreenTests
     }
 
     [Fact]
+    public async Task SummarizingWithoutAStyle_AsksForOne()
+    {
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
+        var vm = Create();
+        await vm.LoadDocumentAsync(path);
+        vm.SelectedPersona = null;
+
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+
+        Assert.Equal("Choose a summary style first.", vm.Status);
+        Assert.True(vm.IsError);
+        Assert.False(vm.HasSummary);
+        File.Delete(path);
+    }
+
+    [Fact]
     public async Task LoadingANewDocument_ClearsTheOldSummary()
     {
         var first = Screen.TempFile("a.txt", "First document.");
@@ -429,6 +461,26 @@ public class ChatScreenTests
     }
 
     [Fact]
+    public async Task CancellingAQuestion_SaysSo_AndTheChatCanBeUsedAgain()
+    {
+        var readiness = new Screen.Readiness();
+        var vm = new ChatViewModel(new DocumentChatAgent(new Screen.SilentModel()), new Screen.Questions(), readiness, new ActivityTracker());
+        vm.StartSession("minutes.txt", "Budget is $150,000.");
+        vm.InputQuestion = "What is the budget?";
+
+        var asking = vm.SendMessageCommand.ExecuteAsync(null);
+        await Screen.Until(() => vm.IsThinking);
+        vm.SendMessageCancelCommand.Execute(null);
+        await asking;
+
+        Assert.Equal(ChatSender.Notice, vm.Messages[^1].Sender);
+        Assert.Equal("Question cancelled.", vm.Messages[^1].Text);
+        Assert.False(vm.IsThinking);
+        vm.InputQuestion = "And the deadline?";
+        Assert.True(vm.SendMessageCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task ClearingTheConversation_KeepsTheDocument()
     {
         var (vm, _, _, _) = Create();
@@ -466,6 +518,10 @@ public class ModelPickerScreenTests
         public List<string> Loaded { get; } = new();
         public bool Up { get; set; } = true;
         public bool LoadFails { get; set; }
+        public bool UnloadFails { get; set; }
+
+        /// <summary>When set, reading the loaded models fails in a way the app does not expect (not a network error).</summary>
+        public bool LoadedListThrows { get; set; }
 
         /// <summary>When set, model loads wait for it, so a test can observe the app while a model is loading.</summary>
         public TaskCompletionSource? LoadGate { get; set; }
@@ -473,6 +529,7 @@ public class ModelPickerScreenTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (!Up) throw new HttpRequestException("Connection refused");
+            if (LoadedListThrows && request.RequestUri!.AbsolutePath == "/models/loaded") throw new InvalidOperationException("Unexpected answer");
             var path = request.RequestUri!.AbsolutePath;
             var name = Uri.UnescapeDataString(path.Split('/').Last());
             if (path.StartsWith("/models/load/") && LoadGate is { } gate) await gate.Task.WaitAsync(cancellationToken);
@@ -483,7 +540,9 @@ public class ModelPickerScreenTests
                     "/status" => Json("""{"modelCachePath":"C:\\cache"}"""),
                     "/models/loaded" => Json(System.Text.Json.JsonSerializer.Serialize(Loaded)),
                     _ when path.StartsWith("/models/load/") && LoadFails => Json("""{"error":"Load failed"}""", HttpStatusCode.InternalServerError),
+                    _ when !Variants.ContainsKey(name) => Json("""{"error":"Model not found"}""", HttpStatusCode.NotFound),
                     _ when path.StartsWith("/models/load/") => Add(Variants[name]),
+                    _ when path.StartsWith("/models/unload/") && UnloadFails => Json("""{"error":"busy"}""", HttpStatusCode.InternalServerError),
                     _ when path.StartsWith("/models/unload/") => Remove(Variants[name]),
                     _ => Json("{}", HttpStatusCode.NotFound)
                 });
@@ -502,13 +561,15 @@ public class ModelPickerScreenTests
     }
 
     private static (ModelPickerViewModel Vm, Foundry Foundry, Screen.Settings Settings, ActivityTracker Activity) Create(
-        Action<Foundry>? setup = null, string? saved = null, TimeSpan? checkEvery = null)
+        Action<Foundry>? setup = null, string? saved = null, TimeSpan? checkEvery = null, Action<FoundryOptions>? configure = null,
+        string? saveProblem = null)
     {
         var foundry = new Foundry();
         setup?.Invoke(foundry);
         var options = new FoundryOptions();
+        configure?.Invoke(options);
         var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, new Cli(), foundry));
-        var settings = new Screen.Settings { Saved = new UserSettings { SelectedModelId = saved } };
+        var settings = new Screen.Settings { Saved = new UserSettings { SelectedModelId = saved }, Problem = saveProblem };
         var activity = new ActivityTracker();
         var vm = new ModelPickerViewModel(client, settings, activity, checkEvery ?? TimeSpan.FromHours(1));
         return (vm, foundry, settings, activity);
@@ -553,6 +614,35 @@ public class ModelPickerScreenTests
 
         Assert.Equal("qwen3-0.6b", settings.Saved.SelectedModelId);
         Assert.Equal("Ready", vm.StatusText);
+    }
+
+    [Fact]
+    public async Task PickingAModel_StillWorks_WhenTheOldOneCannotBeUnloaded_OrTheChoiceCannotBeSaved()
+    {
+        var (vm, foundry, _, _) = Create(f => f.UnloadFails = true, saveProblem: "Could not remember the model choice (disk full).");
+        await Screen.Until(() => vm.IsModelReady);
+
+        vm.SelectedModel = vm.AvailableModels.Single(m => m.Id == "qwen3-0.6b");
+        await Screen.Until(() => vm.IsModelReady && !vm.IsModelLoading && foundry.Loaded.Contains("qwen3-0.6b-generic-gpu:1"));
+
+        // Both problems are reported, but neither blocks the app: the new model is loaded and ready.
+        Assert.StartsWith("Ready. Note: ", vm.StatusText);
+        Assert.Contains("could not unload 'phi-4-mini'", vm.StatusText);
+        Assert.Contains("Could not remember the model choice (disk full).", vm.StatusText);
+        Assert.True(vm.AvailableModels.Single(m => m.Id == "phi-4-mini").IsLoaded);   // still in memory
+    }
+
+    [Fact]
+    public async Task AConfiguredModelThatIsNotDownloaded_IsStillShownInTheList()
+    {
+        var (vm, _, _, _) = Create(configure: o => { o.Local.AutoSelectModel = false; o.Local.ModelId = "mistral-7b"; });
+
+        await Screen.Until(() => vm.AvailableModels.Count > 0 && !vm.IsModelLoading);
+
+        Assert.Equal("mistral-7b", vm.SelectedModel?.Id);
+        Assert.Contains(vm.AvailableModels, m => m.Id == "mistral-7b" && !m.IsLoaded);
+        Assert.False(vm.IsModelReady);                                    // Foundry Local has no such model
+        Assert.True(vm.ShowNotReadyBanner);
     }
 
     [Fact]
@@ -619,6 +709,7 @@ public class ModelPickerScreenTests
     [Fact]
     public async Task AModelUnloadedByFoundryLocal_IsLoadedAgain()
     {
+        Assert.Equal(TimeSpan.FromSeconds(30), ModelPickerViewModel.DefaultLoadedCheckInterval);   // the app's rate; tests check faster
         var (vm, foundry, _, _) = Create(checkEvery: TimeSpan.FromMilliseconds(100));
         await Screen.Until(() => vm.IsModelReady);
 
@@ -639,6 +730,36 @@ public class ModelPickerScreenTests
         Assert.Contains("Click ↻ to reconnect", vm.StatusText);
 
         foundry.Up = true;                                               // back, model still loaded
+        await Screen.Until(() => vm.IsModelReady);
+        Assert.Contains("Ready", vm.StatusText);
+    }
+
+    [Fact]
+    public async Task AModelThatFailedToLoad_StaysNotReady_AndTheCheckSaysWhatIsLoaded()
+    {
+        // The user picked phi-4-mini, it failed to load, and another model is loaded (e.g. from a terminal).
+        var (vm, foundry, _, _) = Create(f => { f.LoadFails = true; f.Loaded.Add("qwen3-0.6b-generic-gpu:1"); },
+            saved: "phi-4-mini", checkEvery: TimeSpan.FromMilliseconds(100));
+        await Screen.Until(() => !vm.IsModelLoading);
+
+        await Screen.Until(() => vm.StatusText.Contains("Pick the loaded model"));
+
+        Assert.False(vm.IsModelReady);                                    // not loaded again automatically
+        Assert.Contains("qwen3-0.6b-generic-gpu:1", vm.StatusText);
+        Assert.Equal(new[] { "qwen3-0.6b-generic-gpu:1" }, foundry.Loaded);
+    }
+
+    [Fact]
+    public async Task AnUnexpectedErrorWhileChecking_IsShown_AndCheckingContinues()
+    {
+        var (vm, foundry, _, _) = Create(checkEvery: TimeSpan.FromMilliseconds(100));
+        await Screen.Until(() => vm.IsModelReady);
+
+        foundry.LoadedListThrows = true;
+        await Screen.Until(() => !vm.IsModelReady);
+        Assert.Contains("Could not check the model state: Unexpected answer", vm.StatusText);
+
+        foundry.LoadedListThrows = false;                                // the next check still runs
         await Screen.Until(() => vm.IsModelReady);
         Assert.Contains("Ready", vm.StatusText);
     }
@@ -672,6 +793,9 @@ public class MainScreenTests
         var picker = new ModelPickerViewModel(new FoundryLocalChatClient(options, new FoundryLocalService(options,
                 new FailingCli(), new RefusingServer())), new Screen.Settings(), activity, TimeSpan.FromHours(1));
         var main = new MainViewModel(picker, summarizer, chat);
+        Assert.Same(picker, main.ModelPicker);
+        Assert.True(main.IsSummarizeTabSelected);                        // the app opens on the Summarize tab
+        Assert.False(main.IsChatTabSelected);
 
         var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
         await summarizer.LoadDocumentAsync(path);
@@ -683,6 +807,7 @@ public class MainScreenTests
 
         main.SelectTabCommand.Execute("1");
         Assert.True(main.IsChatTabSelected);
+        Assert.False(main.IsSummarizeTabSelected);
         main.SelectTabCommand.Execute("7");                               // unknown tab: ignored
         Assert.True(main.IsChatTabSelected);
         File.Delete(path);
@@ -717,6 +842,25 @@ public class UserSettingsStoreTests
         Assert.Null(new JsonUserSettingsStore(path).Load().SelectedModelId);   // falls back to automatic choice
 
         Directory.Delete(Path.GetDirectoryName(path)!, recursive: true);
+    }
+
+    [Fact]
+    public void AFailedSave_SaysWhy_InsteadOfThrowing()
+    {
+        // A file where the settings folder should be makes the folder impossible to create, on every OS.
+        var blocker = Path.Combine(Path.GetTempPath(), $"blocker-{Guid.NewGuid():N}");
+        File.WriteAllText(blocker, "not a folder");
+        try
+        {
+            var problem = new JsonUserSettingsStore(Path.Combine(blocker, "user-settings.json")).Save(new UserSettings { SelectedModelId = "phi-4-mini" });
+
+            Assert.NotNull(problem);
+            Assert.StartsWith("Could not remember the model choice", problem);
+        }
+        finally
+        {
+            File.Delete(blocker);
+        }
     }
 
     [Fact]
