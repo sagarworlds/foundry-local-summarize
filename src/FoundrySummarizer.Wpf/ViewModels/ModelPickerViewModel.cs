@@ -181,7 +181,13 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
                             _lostBecauseUnreachable = false;
                             await ReloadActiveModelAsync();
                         }
-                        break; // a model that failed to load stays "not ready" until the user picks or refreshes
+                        else
+                        {
+                            // A model that failed to load stays "not ready" until the user acts; say exactly what the
+                            // service has loaded, e.g. another variant loaded from a terminal.
+                            SetNotReady($"{state.Problem} Pick the loaded model in the Model list, or click ↻ to load the selected one.");
+                        }
+                        break;
 
                     case ActiveModelStateKind.Unknown when IsModelReady && ++consecutiveFailures >= 2:
                         _lostBecauseUnreachable = true;

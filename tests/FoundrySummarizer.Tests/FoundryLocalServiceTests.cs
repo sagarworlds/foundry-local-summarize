@@ -383,7 +383,8 @@ public class FoundryLocalServiceTests
         var status = await service.CheckAsync(ensureModelLoaded: true);
 
         Assert.False(status.IsAvailable);
-        Assert.Contains("accepted the request to load 'qwen2.5-0.5b-instruct-generic-cpu', but the model is not in its loaded models", status.Problem);
+        Assert.Contains("accepted the request to load 'qwen2.5-0.5b-instruct-generic-cpu', but it is not among the loaded models", status.Problem);
+        Assert.Contains("reports no loaded models", status.Problem);
     }
 
     [Fact]
@@ -416,6 +417,47 @@ public class FoundryLocalServiceTests
 
         foundry.Loaded.Clear();                                          // unloaded after its idle time-to-live
         Assert.Equal(ActiveModelStateKind.NotLoaded, (await service.GetActiveModelStateAsync()).Kind);
+    }
+
+    [Theory]
+    [InlineData("Phi-4-mini-instruct-generic-gpu:5")]   // exact id
+    [InlineData("Phi-4-mini-instruct-generic-gpu")]     // id without its version
+    [InlineData("phi-4-mini")]                          // alias
+    public async Task ActiveModelState_RecognisesEverySpellingOfTheLoadedModel(string reportedName)
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path.Split('?')[0] switch
+        {
+            "/foundry/list" => FakeServer.Json(CatalogJson),
+            "/openai/loadedmodels" => FakeServer.Json($"[\"{reportedName}\"]"),
+            _ => FakeServer.Json("{}")
+        });
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+        service.SelectModel("Phi-4-mini-instruct-generic-gpu:5");
+
+        var status = await service.CheckAsync(ensureModelLoaded: true);
+
+        Assert.True(status.IsAvailable, status.Problem);
+        Assert.DoesNotContain(server.Requests, r => r.StartsWith("/openai/load/"));    // already loaded: no reload
+        Assert.Equal(ActiveModelStateKind.Loaded, (await service.GetActiveModelStateAsync()).Kind);
+    }
+
+    [Fact]
+    public async Task ActiveModelState_SaysWhichModelIsLoadedWhenItIsAnotherOne()
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path.Split('?')[0] switch
+        {
+            "/foundry/list" => FakeServer.Json(CatalogJson),
+            "/openai/loadedmodels" => FakeServer.Json("""["Phi-4-mini-instruct-cuda-gpu:4"]"""),
+            _ => FakeServer.Json("{}")
+        });
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+        service.SelectModel("Phi-4-mini-instruct-generic-gpu:5");
+        await service.CheckAsync(ensureModelLoaded: false);
+
+        var state = await service.GetActiveModelStateAsync();
+
+        Assert.Equal(ActiveModelStateKind.NotLoaded, state.Kind);
+        Assert.Contains("reports loaded: Phi-4-mini-instruct-cuda-gpu:4; the app is set to 'Phi-4-mini-instruct-generic-gpu:5'", state.Problem);
     }
 
     [Fact]

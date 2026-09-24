@@ -133,7 +133,7 @@ public sealed class FoundryLocalService : IDisposable
                 .Select(id => ResolveId(catalog, id))
                 .Where(IsChatModel)
                 .DistinctBy(StripVersion, StringComparer.OrdinalIgnoreCase)
-                .Select(id => new LocalModelInfo(id, loaded.Any(l => SameModel(l, id))))
+                .Select(id => new LocalModelInfo(id, IsInLoadedList(loaded, id, catalog)))
                 .OrderByDescending(m => m.IsLoaded)
                 .ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -216,6 +216,20 @@ public sealed class FoundryLocalService : IDisposable
     public static bool SameModel(string a, string b) =>
         string.Equals(StripVersion(a), StripVersion(b), StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// True when <paramref name="modelId"/> is among <paramref name="loadedNames"/> as reported by
+    /// <c>/openai/loadedmodels</c>. Like the official SDK, each reported name is resolved through the catalog first,
+    /// because the service may report an alias ("phi-4-mini") or an id without its version rather than the exact id.
+    /// </summary>
+    public static bool IsInLoadedList(IEnumerable<string> loadedNames, string modelId, FoundryCatalog? catalog)
+    {
+        var target = catalog?.Resolve(modelId);
+        return loadedNames.Any(name =>
+            SameModel(name, modelId)
+            || (catalog?.Resolve(name) is { } resolved && SameModel(resolved.Id, modelId))
+            || (target is not null && target.Alias.Length > 0 && target.Alias.Equals(name, StringComparison.OrdinalIgnoreCase)));
+    }
+
     private static string StripVersion(string id)
     {
         int colon = id.LastIndexOf(':');
@@ -275,7 +289,7 @@ public sealed class FoundryLocalService : IDisposable
 
                 // Checked against the service on every call (never cached): Foundry Local unloads idle models after
                 // their time-to-live, so a model loaded earlier in the session may be gone now.
-                if (!loaded.Any(id => SameModel(id, _activeModelId)))
+                if (!IsInLoadedList(loaded, _activeModelId, foundryCatalog))
                 {
                     var loadProblem = await LoadModelAsync(serviceBase, _activeModelId, cancellationToken)
                                       ?? await ConfirmLoadedAsync(serviceBase, _activeModelId, cancellationToken);
@@ -369,9 +383,13 @@ public sealed class FoundryLocalService : IDisposable
                     $"Foundry Local is running at {serviceBase} but could not list its loaded models ({listing.Error}).");
             }
 
-            return new ActiveModelState(
-                listing.Ids.Any(id => SameModel(id, _activeModelId)) ? ActiveModelStateKind.Loaded : ActiveModelStateKind.NotLoaded,
-                null);
+            var catalog = await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken);
+            if (IsInLoadedList(listing.Ids, _activeModelId, catalog))
+            {
+                return new ActiveModelState(ActiveModelStateKind.Loaded, null);
+            }
+
+            return new ActiveModelState(ActiveModelStateKind.NotLoaded, DescribeLoaded(serviceBase, listing.Ids));
         }
         finally
         {
@@ -391,15 +409,24 @@ public sealed class FoundryLocalService : IDisposable
             if (attempt > 0) await Task.Delay(LoadConfirmDelay, cancellationToken);
 
             var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
-            if (loaded is not null && loaded.Any(id => SameModel(id, modelId)))
+            if (loaded is not null && IsInLoadedList(loaded, modelId, await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken)))
             {
                 return null;
             }
         }
 
-        return $"Foundry Local accepted the request to load '{modelId}', but the model is not in its loaded models. " +
+        var reported = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
+        return $"Foundry Local accepted the request to load '{modelId}', but it is not among the loaded models. {DescribeLoaded(serviceBase, reported)} " +
                $"Try loading it in a terminal with 'foundry model run {modelId}' to see Foundry Local's error.";
     }
+
+    /// <summary>What the service reports as loaded, so a mismatch (e.g. a different variant loaded) is visible to the user.</summary>
+    private string DescribeLoaded(Uri serviceBase, IReadOnlyList<string> loaded) =>
+        loaded.Count == 0
+            ? $"Foundry Local at {serviceBase} reports no loaded models; the app is set to '{_activeModelId}'."
+            : $"Foundry Local at {serviceBase} reports loaded: {string.Join(", ", loaded)}; the app is set to '{_activeModelId}'.";
+
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
 
     private const int LoadConfirmAttempts = 4;
     private static readonly TimeSpan LoadConfirmDelay = TimeSpan.FromMilliseconds(500);
@@ -514,7 +541,9 @@ public sealed class FoundryLocalService : IDisposable
     private async Task<string?> ProbeAsync(Uri serviceBase, CancellationToken cancellationToken)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(5));
+        // Generous: while Foundry Local loads a model or generates on the CPU it can be slow to answer, and a
+        // timeout here is reported as "not responding".
+        cts.CancelAfter(ProbeTimeout);
         try
         {
             using var response = await _probeClient.GetAsync(new Uri(serviceBase, "openai/status"), cts.Token);
@@ -522,7 +551,7 @@ public sealed class FoundryLocalService : IDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return $"The local model service at {serviceBase} did not respond within 5s.";
+            return $"The local model service at {serviceBase} did not respond within {ProbeTimeout.TotalSeconds:F0}s.";
         }
         catch (HttpRequestException ex)
         {
