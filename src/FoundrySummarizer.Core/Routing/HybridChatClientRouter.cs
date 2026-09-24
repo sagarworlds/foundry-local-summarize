@@ -270,7 +270,7 @@ public class HybridChatClientRouter : IChatClient
             return client;
         }
 
-        if (WouldEscalateToCloud(estimatedTokens))
+        if (WouldEscalateToCloud(estimatedTokens) && _cloudClient is { } cloudClient)
         {
             decimal cost = Math.Round((decimal)(estimatedTokens * 0.000005 + 500 * 0.000015), 4);
             LastRoutingDecision = new RoutingDecisionInfo(
@@ -284,7 +284,7 @@ public class HybridChatClientRouter : IChatClient
                 Rationale: $"Document complexity ({estimatedTokens} tokens > {_options.EscalationTokenThreshold} threshold) escalated to Cloud Frontier model."
             );
             OnRoutingDecision?.Invoke(LastRoutingDecision);
-            return _cloudClient;
+            return cloudClient;
         }
 
         bool daemonActive = await CheckLocalDaemonStatusAsync(cancellationToken);

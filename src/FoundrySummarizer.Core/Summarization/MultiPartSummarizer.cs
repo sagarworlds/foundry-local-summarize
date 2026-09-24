@@ -14,7 +14,8 @@ namespace FoundrySummarizer.Core.Summarization;
 /// </summary>
 public class MultiPartSummarizer : IDocumentSummarizer
 {
-    internal const string NoteTakerSystemPrompt = """
+    /// <summary>System prompt for the per-part note-taking (map) step.</summary>
+    public const string NoteTakerSystemPrompt = """
         You take notes on one part of a longer document so that a summary can later be written from your notes alone.
 
         RULES:
