@@ -125,7 +125,9 @@ public partial class SummarizerViewModel : ObservableObject
             var messages = _promptyEngine.RenderChatMessages(activeDoc, variables);
 
             GenerationStatus = "Processing via Foundry Local router...";
-            var response = await _router.GetResponseAsync(messages);
+            // Pass the persona's sampling settings (low temperature, output budget); otherwise the
+            // endpoint defaults apply and small models paraphrase loosely or truncate sections.
+            var response = await _router.GetResponseAsync(messages, activeDoc.ToChatOptions());
 
             GeneratedSummary = response.Text ?? string.Empty;
             GenerationStatus = $"Summary generated successfully via {LastRoutingInfo?.RouteName ?? "Foundry Local"}";

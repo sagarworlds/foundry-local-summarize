@@ -33,6 +33,24 @@ public class HybridRouterTests
     }
 
     [Fact]
+    public async Task Router_LabelsOfflineDemoOutput_WhenNoModelIsReachable()
+    {
+        // Port 9 (discard) is never an OpenAI-compatible endpoint, so the router must use the demo engine.
+        var options = new FoundryOptions { PrivacyMode = true };
+        options.Local.AutoDiscover = false;
+        options.Local.Endpoint = "http://127.0.0.1:9/v1";
+
+        var router = new HybridChatClientRouter(options);
+        var response = await router.GetResponseAsync(new List<ChatMessage>
+        {
+            new(ChatRole.System, "Persona: Executive Bullets"),
+            new(ChatRole.User, "Budget request of $150,000.")
+        });
+
+        Assert.StartsWith(HybridChatClientRouter.FallbackNotice, response.Text);
+    }
+
+    [Fact]
     public async Task FallbackClient_GeneratesActionItemsSummary()
     {
         var client = new LocalFoundryFallbackClient();

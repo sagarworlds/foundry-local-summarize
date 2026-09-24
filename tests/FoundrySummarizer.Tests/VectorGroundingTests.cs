@@ -40,5 +40,7 @@ public class VectorGroundingTests
         Assert.Contains("SEMANTIC GROUNDING", context);
         Assert.Contains("Liability Cap Standards", context);
         Assert.Contains("LEG-104", context);
+        Assert.Contains("<reference_policies>", context);
+        Assert.Contains("NOT part of the document", context);
     }
 }

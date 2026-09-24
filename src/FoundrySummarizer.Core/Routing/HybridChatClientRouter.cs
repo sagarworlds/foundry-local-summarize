@@ -18,6 +18,17 @@ public record RoutingDecisionInfo(
 
 public class HybridChatClientRouter : IChatClient
 {
+    /// <summary>
+    /// Prepended to any answer produced by <see cref="LocalFoundryFallbackClient"/>. That engine returns
+    /// canned demo text that is not derived from the input, so it must never be mistaken for a real summary.
+    /// </summary>
+    public const string FallbackNotice =
+        "> ⚠️ **Offline demo output.** No language model was reachable, so the text below is an illustrative template and was NOT generated from your document. Start Foundry Local (or check the endpoint/model in appsettings.json) and try again.\n\n";
+
+    // Foundry Local can take well over 500 ms to answer /v1/models while a model is loading or
+    // generating on CPU; a too-short probe silently diverted real requests to the demo engine.
+    private const int HealthCheckTimeoutMs = 2000;
+
     private readonly FoundryOptions _options;
     private readonly LocalFoundryFallbackClient _fallbackClient = new();
     private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(3) };
@@ -74,7 +85,7 @@ public class HybridChatClientRouter : IChatClient
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(500);
+            cts.CancelAfter(HealthCheckTimeoutMs);
             string endpoint = _options.GetEffectiveLocalEndpoint();
             var baseUri = new Uri(endpoint);
             var healthUrl = $"{baseUri.Scheme}://{baseUri.Authority}/v1/models";
@@ -95,6 +106,11 @@ public class HybridChatClientRouter : IChatClient
     {
         var list = chatMessages.ToList();
         var targetClient = await SelectClientAsync(list, cancellationToken);
+        if (targetClient == _fallbackClient)
+        {
+            return WithFallbackNotice(await _fallbackClient.GetResponseAsync(list, options, cancellationToken));
+        }
+
         try
         {
             return await targetClient.GetResponseAsync(list, options, cancellationToken);
@@ -104,10 +120,10 @@ public class HybridChatClientRouter : IChatClient
             LastRoutingDecision = (LastRoutingDecision ?? new RoutingDecisionInfo("Fallback", _options.LocalEndpoint, _options.LocalModelId, true, true, 0, 0, "")) with
             {
                 RouteName = "Local Offline Fallback",
-                Rationale = $"Primary endpoint failed ({ex.Message}). Seamlessly processed via local offline fallback engine."
+                Rationale = $"Primary endpoint failed ({ex.Message}). Answered by the offline demo engine (output is not derived from the document)."
             };
             OnRoutingDecision?.Invoke(LastRoutingDecision);
-            return await _fallbackClient.GetResponseAsync(list, options, cancellationToken);
+            return WithFallbackNotice(await _fallbackClient.GetResponseAsync(list, options, cancellationToken));
         }
     }
 
@@ -130,8 +146,9 @@ public class HybridChatClientRouter : IChatClient
             failed = true;
         }
 
-        if (failed || enumerator == null)
+        if (failed || enumerator == null || targetClient == _fallbackClient)
         {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, FallbackNotice);
             await foreach (var item in _fallbackClient.GetStreamingResponseAsync(list, options, cancellationToken))
             {
                 yield return item;
@@ -157,6 +174,7 @@ public class HybridChatClientRouter : IChatClient
 
         if (failed)
         {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, FallbackNotice);
             await foreach (var item in _fallbackClient.GetStreamingResponseAsync(list, options, cancellationToken))
             {
                 yield return item;
@@ -221,6 +239,13 @@ public class HybridChatClientRouter : IChatClient
         OnRoutingDecision?.Invoke(LastRoutingDecision);
         return chosenClient;
     }
+
+    private static ChatResponse WithFallbackNotice(ChatResponse response) =>
+        new(new ChatMessage(ChatRole.Assistant, FallbackNotice + response.Text))
+        {
+            ModelId = response.ModelId,
+            CreatedAt = response.CreatedAt
+        };
 
     public object? GetService(Type serviceType, object? serviceKey = null) =>
         serviceType.IsInstanceOfType(this) ? this : null;

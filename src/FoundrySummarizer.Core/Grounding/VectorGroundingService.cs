@@ -81,21 +81,25 @@ public class VectorGroundingService : IVectorGroundingService
             return string.Empty;
         }
 
+        // The policies are wrapped in their own tag and explicitly marked as not being part of the
+        // document. Small models otherwise blend policy text into the summary (e.g. reporting the
+        // $100,000 policy threshold as if it were a cost in the document) or invent "deviations"
+        // simply because they were told to flag some.
         var sb = new StringBuilder();
+        sb.AppendLine("<reference_policies>");
         sb.AppendLine("=== SEMANTIC GROUNDING: CORPORATE POLICY CROSS-REFERENCES ===");
-        sb.AppendLine("The following verified internal governance policies were matched against the document text via Microsoft.Extensions.VectorData:");
+        sb.AppendLine("These internal policies are reference material only. They are NOT part of the document and their figures are NOT document facts.");
         sb.AppendLine();
 
         foreach (var match in matches)
         {
-            sb.AppendLine($"[POLICY CITATION: {match.Record.Title} | Category: {match.Record.Category} | Grounding Match: {match.SimilarityScore:P0}]");
+            sb.AppendLine($"[POLICY CITATION: {match.Record.Title} | Category: {match.Record.Category}]");
             sb.AppendLine(match.Record.Content.Trim());
             sb.AppendLine();
         }
 
-        sb.AppendLine("INSTRUCTION: When generating the summary, compare document terms and figures against the above policy rules. Explicitly flag any deviations (e.g. unapproved expenditures exceeding limits or non-standard liability caps) in your report.");
-        sb.AppendLine("==============================================================");
-        sb.AppendLine();
+        sb.AppendLine("INSTRUCTION: Flag a deviation only when a specific figure or clause in the document actually violates one of these policies; quote the document value and the policy ID. If nothing in the document conflicts with a policy, do not mention that policy.");
+        sb.AppendLine("</reference_policies>");
 
         return sb.ToString();
     }
