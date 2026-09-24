@@ -72,3 +72,6 @@ secrets.json
 *.crash
 *.stackdump
 *.trace
+
+## Installer build output (built by the release workflow; download installers from GitHub Releases)
+installer/Output/
