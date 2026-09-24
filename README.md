@@ -45,7 +45,7 @@ Every style tells the model to use only facts from the document, copy figures, d
 
 ### Finding Foundry Local
 
-Foundry Local starts on a new port every time, so the app runs `foundry service status` to find it (as the official SDK does). If the service is stopped, it runs `foundry service start`. It then picks a model and loads it before the first request.
+Foundry Local starts on a new port every time, so the app asks the CLI where it is: `foundry server status` (Foundry Local 1.x and later) or `foundry service status` (0.x). If it is stopped, the app starts it (`foundry server start` / `foundry service start`). The two versions have different web APIs; the app detects which one is running and uses the matching routes (`/models/load/{alias}` and `/models/loaded` in 1.x+, `/openai/load/{id}` and `/openai/loadedmodels` in 0.x). In 1.x+ the downloaded models are read from `foundry model list` (the Cached column). It then picks a model and loads it before the first request.
 
 ### Choosing the model
 

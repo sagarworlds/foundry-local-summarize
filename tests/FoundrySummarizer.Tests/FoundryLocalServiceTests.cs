@@ -70,6 +70,15 @@ public class FoundryLocalServiceTests
             new(HttpStatusCode.NotFound) { Content = new StringContent(body) };
     }
 
+    /// <summary>A Foundry Local 0.x CLI: "server" is an unknown command; "service status" reports stopped until started.</summary>
+    private static FakeCli LegacyCliStoppedUntilStarted() => new((args, call) => args switch
+    {
+        "server status" or "server start" => new FoundryCliResult(false, "Unknown command 'server'.", "'foundry server status' exited with code 1"),
+        "service status" when call == 1 => new FoundryCliResult(true, "🔴 Model management service is not running!", null),
+        "service start" => new FoundryCliResult(true, "Service started.", null),
+        _ => new FoundryCliResult(true, RunningStatus, null)
+    });
+
     private static FoundryOptions Options(Action<LocalFoundryConfig>? configure = null)
     {
         var options = new FoundryOptions();
@@ -102,19 +111,15 @@ public class FoundryLocalServiceTests
     [Fact]
     public async Task Starts_ServiceWhenStatusSaysItIsNotRunning()
     {
-        var cli = new FakeCli((args, call) => args switch
-        {
-            "service status" when call == 1 => new FoundryCliResult(true, "🔴 Model management service is not running!", null),
-            "service start" => new FoundryCliResult(true, "Service started.", null),
-            _ => new FoundryCliResult(true, RunningStatus, null)
-        });
+        var cli = LegacyCliStoppedUntilStarted();
         var server = new FakeServer(new[] { "127.0.0.1:5273" }, _ => FakeServer.Json("[]"));
         using var service = new FoundryLocalService(Options(), cli, server);
 
         var status = await service.CheckAsync(ensureModelLoaded: false);
 
         Assert.True(status.IsAvailable, status.Problem);
-        Assert.Equal(new[] { "service status", "service start", "service status" }, cli.Commands);
+        // The newer "server" command is tried first; the 0.x CLI rejects it, so "service" is used.
+        Assert.Equal(new[] { "server status", "service status", "service start", "service status" }, cli.Commands.Take(4));
     }
 
     [Fact]
@@ -707,12 +712,7 @@ public class FoundryLocalServiceTests
     [Fact]
     public async Task ListingModels_StartsTheServiceWhenItIsStopped()
     {
-        var cli = new FakeCli((args, call) => args switch
-        {
-            "service status" when call == 1 => new FoundryCliResult(true, "🔴 Model management service is not running!", null),
-            "service start" => new FoundryCliResult(true, "Service started.", null),
-            _ => new FoundryCliResult(true, RunningStatus, null)
-        });
+        var cli = LegacyCliStoppedUntilStarted();
         using var service = new FoundryLocalService(Options(), cli, MachineWithPhiDownloaded());
 
         var list = await service.ListModelsAsync();
@@ -724,7 +724,8 @@ public class FoundryLocalServiceTests
     [Fact]
     public async Task ListingModels_ExplainsWhenNothingIsDownloaded()
     {
-        var server = new FakeServer(new[] { "127.0.0.1:5273" }, _ => FakeServer.Json("[]"));
+        // Foundry Local 0.x with an empty cache: only its own routes exist.
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path.StartsWith("/openai/") ? FakeServer.Json("[]") : FakeServer.NotFound());
         using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
 
         var list = await service.ListModelsAsync();

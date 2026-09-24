@@ -45,14 +45,14 @@ public record LocalModelList(IReadOnlyList<LocalModelInfo> Models, string? Probl
 /// <summary>
 /// Finds, starts and checks Foundry Local (or another OpenAI-compatible local server such as Ollama), picks the
 /// model and makes sure it is loaded. Every failure is reported with a reason, so the app can tell the user why
-/// no model answered instead of silently falling back.
+/// no model answered instead of silently falling back. Version differences (Foundry Local 0.x "foundry service"
+/// vs 1.x+ "foundry server") are handled by the <see cref="IModelManagementApi"/> detected for the server.
 /// </summary>
 public sealed class FoundryLocalService : IDisposable
 {
     private readonly FoundryOptions _options;
     private readonly IFoundryCli _cli;
-    private readonly HttpClient _probeClient;
-    private readonly LocalModelCatalog _catalog;
+    private readonly HttpClient _http;
     private readonly PipelineTransport? _chatTransport;
 
     // Checks run before every request and may run concurrently (summary + chat); one at a time keeps the
@@ -60,17 +60,21 @@ public sealed class FoundryLocalService : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private Uri? _serviceBase;
+    private IModelManagementApi? _api;
+    private Uri? _apiBase;
     private string _activeModelId;
+    private string? _chatModelId;
     private IChatClient? _client;
     private string? _clientKey;
     private string? _userSelectedModelId;
 
-    // Foundry Local's catalog (/foundry/list), fetched once per service address; null for servers without it.
-    private FoundryCatalog? _foundryCatalog;
-    private Uri? _foundryCatalogBase;
-
     // Speech, embedding and image models share the listing but cannot answer chat requests.
-    private static readonly string[] NonChatMarkers = { "whisper", "embed", "tts", "vision-encoder" };
+    private static readonly string[] NonChatMarkers = { "whisper", "embed", "tts", "vision-encoder", "asr", "speech" };
+
+    // A busy service (loading a model, generating on the CPU) can be slow to answer; a timeout means "not responding".
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
+    private const int LoadConfirmAttempts = 4;
+    private static readonly TimeSpan LoadConfirmDelay = TimeSpan.FromMilliseconds(500);
 
     /// <param name="options">Local endpoint, model and timeout settings.</param>
     /// <param name="cli">Foundry CLI runner; defaults to the real <c>foundry</c> executable.</param>
@@ -79,25 +83,27 @@ public sealed class FoundryLocalService : IDisposable
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _cli = cli ?? new FoundryCli();
-        _probeClient = probeHandler is null ? new HttpClient() : new HttpClient(probeHandler);
-        // Model loads can take minutes; each call sets its own shorter timeout where appropriate.
-        _probeClient.Timeout = Timeout.InfiniteTimeSpan;
-        _catalog = new LocalModelCatalog(_probeClient);
+        _http = probeHandler is null ? new HttpClient() : new HttpClient(probeHandler);
+        // Model loads can take minutes; each call sets its own timeout.
+        _http.Timeout = Timeout.InfiniteTimeSpan;
         _chatTransport = probeHandler is null ? null : new HttpClientPipelineTransport(new HttpClient(probeHandler, disposeHandler: false));
         _activeModelId = options.LocalModelId;
     }
 
-    /// <summary>The model requests are sent to (configured, or the best available when auto-selection is on).</summary>
+    /// <summary>The selected model (configured, chosen by the user, or the best available when auto-selection is on).</summary>
     public string ActiveModelId => _activeModelId;
 
     /// <summary>The model the user chose, or null to choose automatically from the preferences.</summary>
     public string? UserSelectedModelId => _userSelectedModelId;
 
+    /// <summary>The OpenAI-compatible endpoint last found, or null before the first successful check.</summary>
+    public Uri? Endpoint => _serviceBase is null ? null : new Uri(_serviceBase, "v1");
+
     /// <summary>
     /// Uses <paramref name="modelId"/> for all further requests, or returns to automatic selection when null.
     /// The model is loaded on the next <see cref="CheckAsync"/> with <c>ensureModelLoaded</c>.
     /// </summary>
-    /// <param name="modelId">A model id from <see cref="ListModelsAsync"/>, or null for automatic.</param>
+    /// <param name="modelId">A model name from <see cref="ListModelsAsync"/>, or null for automatic.</param>
     public void SelectModel(string? modelId)
     {
         _userSelectedModelId = string.IsNullOrWhiteSpace(modelId) ? null : modelId.Trim();
@@ -116,24 +122,23 @@ public sealed class FoundryLocalService : IDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            var (serviceBase, problem) = await FindReachableServiceAsync(cancellationToken);
-            if (serviceBase is null)
+            var (api, problem) = await ConnectAsync(cancellationToken);
+            if (api is null)
             {
                 return new LocalModelList(Array.Empty<LocalModelInfo>(), problem);
             }
 
-            var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
-            var downloaded = await ListDownloadedAsync(serviceBase, cancellationToken);
-            // Re-read the catalog so a model downloaded since the last refresh resolves too.
-            var catalog = await GetFoundryCatalogAsync(serviceBase, refresh: true, cancellationToken);
+            var downloaded = await api.ListDownloadedAsync(cancellationToken);
+            if (downloaded.Ids is null)
+            {
+                return new LocalModelList(Array.Empty<LocalModelInfo>(), $"Could not list the downloaded models of {api.DisplayName}: {downloaded.Error}");
+            }
 
-            // Shown by their catalog id (the only form the load route accepts), once each even when the two
-            // endpoints spell the id with and without a version suffix.
-            var models = downloaded.Concat(loaded)
-                .Select(id => ResolveId(catalog, id))
+            var loaded = (await api.ListLoadedAsync(cancellationToken)).Ids ?? Array.Empty<string>();
+            var models = downloaded.Ids
                 .Where(IsChatModel)
-                .DistinctBy(StripVersion, StringComparer.OrdinalIgnoreCase)
-                .Select(id => new LocalModelInfo(id, IsInLoadedList(loaded, id, catalog)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(name => new LocalModelInfo(name, api.IsLoaded(loaded, name)))
                 .OrderByDescending(m => m.IsLoaded)
                 .ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -149,37 +154,95 @@ public sealed class FoundryLocalService : IDisposable
     }
 
     /// <summary>
-    /// Asks Foundry Local to release <paramref name="modelId"/> from memory (<c>/openai/unload/{model}</c>), freeing
-    /// GPU/RAM for the next model. Servers without the route (e.g. Ollama) are treated as success.
+    /// Checks that the local service is reachable and picks the model.
     /// </summary>
-    /// <returns>Null on success or when there is nothing to unload; otherwise why unloading failed.</returns>
-    public async Task<string?> UnloadModelAsync(string modelId, CancellationToken cancellationToken = default)
+    /// <param name="ensureModelLoaded">Also load the model if needed (slow; do this before real requests, not for status polling).</param>
+    /// <param name="cancellationToken">Cancels the check.</param>
+    public async Task<LocalModelStatus> CheckAsync(bool ensureModelLoaded, CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (_serviceBase is null) return null;
+            var (api, problem) = await ConnectAsync(cancellationToken);
+            if (api is null)
+            {
+                return Unavailable(problem!);
+            }
 
-            modelId = ResolveId(await GetFoundryCatalogAsync(_serviceBase, refresh: false, cancellationToken), modelId);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(TimeSpan.FromSeconds(60));
-            var url = new Uri(_serviceBase, $"openai/unload/{PathSegment(modelId)}?force=true");
-            try
+            var loadedListing = await api.ListLoadedAsync(cancellationToken);
+            await SelectModelAsync(api, loadedListing.Ids, cancellationToken);
+            var loaded = loadedListing.Ids ?? Array.Empty<string>();
+
+            if (ensureModelLoaded && api.SupportsLoading)
             {
-                using var response = await _probeClient.GetAsync(url, cts.Token);
-                // 404: the model was not loaded, or the server has no unload route; either way nothing to free.
-                return response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound
-                    ? null
-                    : $"Foundry Local could not unload '{modelId}' (HTTP {(int)response.StatusCode}); it stays in memory until its idle timeout.";
+                if (loadedListing.Ids is null)
+                {
+                    // "The server answers" is not enough: without the loaded list the model cannot be confirmed.
+                    return Unavailable($"{api.DisplayName} did not report which models are loaded ({loadedListing.Error}), so the app cannot confirm the model is ready. Restart Foundry Local and try again.");
+                }
+
+                // Checked against the service on every call (never cached): Foundry Local unloads idle models after
+                // their time-to-live, so a model loaded earlier in the session may be gone now.
+                if (!api.IsLoaded(loaded, _activeModelId))
+                {
+                    var (confirmed, loadProblem) = await LoadAndConfirmAsync(api, cancellationToken);
+                    if (loadProblem is not null)
+                    {
+                        return Unavailable(loadProblem);
+                    }
+                    loaded = confirmed;
+                }
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+
+            _chatModelId = api.ChatModelId(loaded, _activeModelId);
+            return new LocalModelStatus(true, Endpoint, _activeModelId, null, GetOrCreateClient(_serviceBase!, _chatModelId));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Whether the active model is in memory right now. The service is found again first, so a restart on a new port
+    /// is followed, and a failed listing is retried once before it counts as a failure.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the check.</param>
+    public async Task<ActiveModelState> GetActiveModelStateAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var (api, problem) = await ConnectAsync(cancellationToken);
+            if (api is null)
             {
-                return $"Unloading '{modelId}' did not finish within 60s; it stays in memory until its idle timeout.";
+                return new ActiveModelState(ActiveModelStateKind.Unknown, problem);
             }
-            catch (HttpRequestException ex)
+
+            if (!api.SupportsLoading)
             {
-                return $"Unloading '{modelId}' failed: {ex.Message}";
+                return new ActiveModelState(ActiveModelStateKind.Loaded, null);
             }
+
+            var listing = await api.ListLoadedAsync(cancellationToken);
+            if (listing.Ids is null)
+            {
+                await Task.Delay(LoadConfirmDelay, cancellationToken);
+                listing = await api.ListLoadedAsync(cancellationToken);
+            }
+
+            if (listing.Ids is null)
+            {
+                return new ActiveModelState(ActiveModelStateKind.Unknown,
+                    $"{api.DisplayName} is running but could not list its loaded models ({listing.Error}).");
+            }
+
+            // Same choice and spelling as before a request: with automatic selection, a preferred model loaded
+            // outside the app (e.g. 'foundry model run phi-4-mini') becomes the active one.
+            await SelectModelAsync(api, listing.Ids, cancellationToken);
+            return api.IsLoaded(listing.Ids, _activeModelId)
+                ? new ActiveModelState(ActiveModelStateKind.Loaded, null)
+                : new ActiveModelState(ActiveModelStateKind.NotLoaded, DescribeLoaded(api, listing.Ids));
         }
         finally
         {
@@ -197,10 +260,35 @@ public sealed class FoundryLocalService : IDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            return _serviceBase is null
-                ? "The local model service has not been found yet."
-                : await LoadModelAsync(_serviceBase, _activeModelId, cancellationToken)
-                  ?? await ConfirmLoadedAsync(_serviceBase, _activeModelId, cancellationToken);
+            var (api, problem) = await ConnectAsync(cancellationToken);
+            if (api is null) return problem;
+
+            var (loaded, loadProblem) = await LoadAndConfirmAsync(api, cancellationToken);
+            if (loadProblem is null)
+            {
+                _chatModelId = api.ChatModelId(loaded, _activeModelId);
+            }
+            return loadProblem;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Releases <paramref name="modelId"/> from memory, freeing GPU/RAM for the next model. Servers that load models
+    /// on demand have nothing to unload and report success.
+    /// </summary>
+    /// <returns>Null on success or when there is nothing to unload; otherwise why unloading failed.</returns>
+    public async Task<string?> UnloadModelAsync(string modelId, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_serviceBase is null) return null;
+            var (api, _) = await ConnectAsync(cancellationToken);
+            return api is null ? null : await api.UnloadAsync(await api.NormalizeAsync(modelId, cancellationToken), cancellationToken);
         }
         finally
         {
@@ -217,9 +305,9 @@ public sealed class FoundryLocalService : IDisposable
         string.Equals(StripVersion(a), StripVersion(b), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// True when <paramref name="modelId"/> is among <paramref name="loadedNames"/> as reported by
-    /// <c>/openai/loadedmodels</c>. Like the official SDK, each reported name is resolved through the catalog first,
-    /// because the service may report an alias ("phi-4-mini") or an id without its version rather than the exact id.
+    /// True when <paramref name="modelId"/> is among <paramref name="loadedNames"/> as reported by Foundry Local 0.x.
+    /// Like the official SDK, each reported name is resolved through the catalog first, because the service may
+    /// report an alias ("phi-4-mini") or an id without its version rather than the exact id.
     /// </summary>
     public static bool IsInLoadedList(IEnumerable<string> loadedNames, string modelId, FoundryCatalog? catalog)
     {
@@ -230,240 +318,139 @@ public sealed class FoundryLocalService : IDisposable
             || (target is not null && target.Alias.Length > 0 && target.Alias.Equals(name, StringComparison.OrdinalIgnoreCase)));
     }
 
-    private static string StripVersion(string id)
+    /// <summary>
+    /// Creates an OpenAI-compatible chat client for a local server, with the request fix-ups local servers need
+    /// (see <see cref="MaxTokensCompatibilityPolicy"/>).
+    /// </summary>
+    /// <param name="endpoint">The OpenAI-compatible base address (…/v1).</param>
+    /// <param name="modelId">Model to send requests to.</param>
+    /// <param name="networkTimeout">Maximum wait for one response.</param>
+    /// <param name="transport">HTTP transport; tests pass a fake, null uses the default.</param>
+    public static IChatClient CreateChatClient(Uri endpoint, string modelId, TimeSpan networkTimeout, PipelineTransport? transport = null)
     {
-        int colon = id.LastIndexOf(':');
-        return colon > 0 && colon < id.Length - 1 && id.AsSpan(colon + 1).IndexOfAnyExceptInRange('0', '9') < 0
-            ? id[..colon]
-            : id;
+        var clientOptions = new OpenAIClientOptions { Endpoint = endpoint, NetworkTimeout = networkTimeout };
+        if (transport is not null) clientOptions.Transport = transport;
+        clientOptions.AddPolicy(new MaxTokensCompatibilityPolicy(), PipelinePosition.PerCall);
+
+        return new OpenAIClient(new ApiKeyCredential("local-foundry-key"), clientOptions).GetChatClient(modelId).AsIChatClient();
     }
 
-    private static bool IsChatModel(string id) =>
-        !NonChatMarkers.Any(marker => id.Contains(marker, StringComparison.OrdinalIgnoreCase));
-
-    /// <summary>Foundry Local lists downloaded (cached) models at /openai/models; other servers at /v1/models.</summary>
-    private async Task<IReadOnlyList<string>> ListDownloadedAsync(Uri serviceBase, CancellationToken cancellationToken) =>
-        await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/models", cancellationToken)
-        ?? await _catalog.TryGetModelIdsAsync(serviceBase, "/v1/models", cancellationToken)
-        ?? Array.Empty<string>();
-
-    /// <summary>The OpenAI-compatible endpoint last found, or null before the first successful check.</summary>
-    public Uri? Endpoint => _serviceBase is null ? null : new Uri(_serviceBase, "v1");
-
-    /// <summary>
-    /// Checks that the local service is reachable and picks the model.
-    /// </summary>
-    /// <param name="ensureModelLoaded">Also load the model into Foundry Local if needed (slow; do this before real requests, not for status polling).</param>
-    /// <param name="cancellationToken">Cancels the check.</param>
-    public async Task<LocalModelStatus> CheckAsync(bool ensureModelLoaded, CancellationToken cancellationToken = default)
+    /// <summary>Finds the service and the model-management API that matches its version.</summary>
+    private async Task<(IModelManagementApi? Api, string? Problem)> ConnectAsync(CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
-        try
+        var (serviceBase, problem) = await FindReachableServiceAsync(cancellationToken);
+        if (serviceBase is null)
         {
-            var (serviceBase, problem) = await FindReachableServiceAsync(cancellationToken);
-            if (serviceBase is null)
-            {
-                return Unavailable(problem!);
-            }
-
-            var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
-            var foundryCatalog = await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken);
-
-            // Foundry Local is recognised by either of its own routes. A failed loaded-model listing alone must not
-            // make it look like a server that loads models on demand (e.g. Ollama), or "ready" would only mean
-            // "the service answers".
-            bool isFoundry = loaded is not null || foundryCatalog is not null;
-            await SelectModelAsync(serviceBase, loaded, cancellationToken);
-            if (foundryCatalog is not null)
-            {
-                // Requests must name the model exactly as the catalog does ("…-gpu:5"), or Foundry Local rejects them.
-                _activeModelId = ResolveId(foundryCatalog, _activeModelId);
-            }
-
-            if (ensureModelLoaded && isFoundry)
-            {
-                if (loaded is null)
-                {
-                    return Unavailable("Foundry Local did not report which models are loaded (/openai/loadedmodels), so the app cannot confirm the model is ready. Restart it with 'foundry service restart'.");
-                }
-
-                // Checked against the service on every call (never cached): Foundry Local unloads idle models after
-                // their time-to-live, so a model loaded earlier in the session may be gone now.
-                if (!IsInLoadedList(loaded, _activeModelId, foundryCatalog))
-                {
-                    var loadProblem = await LoadModelAsync(serviceBase, _activeModelId, cancellationToken)
-                                      ?? await ConfirmLoadedAsync(serviceBase, _activeModelId, cancellationToken);
-                    if (loadProblem is not null)
-                    {
-                        return Unavailable(loadProblem);
-                    }
-                }
-            }
-
-            return new LocalModelStatus(true, Endpoint, _activeModelId, null, GetOrCreateClient(serviceBase));
+            return (null, problem);
         }
-        finally
+
+        if (_api is null || _apiBase != serviceBase)
         {
-            _gate.Release();
+            _api = await DetectApiAsync(serviceBase, cancellationToken);
+            _apiBase = serviceBase;
         }
+
+        return (_api, null);
     }
 
     /// <summary>
-    /// Asks Foundry Local to load <paramref name="modelId"/> into memory, the way Microsoft's Foundry Local SDK does:
-    /// <c>/openai/load/{catalog id}?timeout=…</c>, adding <c>ep=cuda</c> for generic-GPU builds on CUDA machines.
+    /// Tells the server kinds apart by routes only each has. Foundry Local 1.x+ answers <c>/models/loaded</c> with a
+    /// JSON array and <c>/status</c> with its model cache path; 0.x answers <c>/openai/loadedmodels</c> or
+    /// <c>/openai/status</c>. Two signals per version, so one failing route cannot make Foundry Local look like a
+    /// generic server (which would skip the loaded-model check). Anything else is a generic OpenAI-compatible server.
     /// </summary>
-    /// <returns>Null on success; otherwise what went wrong and how to fix it.</returns>
-    public async Task<string?> LoadModelAsync(Uri serviceBase, string modelId, CancellationToken cancellationToken = default)
+    private async Task<IModelManagementApi> DetectApiAsync(Uri serviceBase, CancellationToken cancellationToken)
     {
-        var catalog = await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken);
-        var entry = catalog?.Resolve(modelId);
-        if (catalog is { Count: > 0 } && entry is null)
+        var loadTimeout = TimeSpan.FromSeconds(Math.Max(1, _options.Local.ModelLoadTimeoutSeconds));
+
+        var status = await LocalHttp.GetAsync(_http, serviceBase, "/status", ProbeTimeout, cancellationToken);
+        if ((status.IsSuccess && status.Body.Contains("modelCachePath", StringComparison.OrdinalIgnoreCase))
+            || IsModelArray(await LocalHttp.GetAsync(_http, serviceBase, "/models/loaded", ProbeTimeout, cancellationToken)))
         {
-            return $"Foundry Local's catalog has no model named '{modelId}'. Pick another model, or check the name with 'foundry model list'.";
+            return new FoundryServerApi(_http, serviceBase, _cli, loadTimeout);
         }
 
-        var loadId = entry?.Id ?? modelId;
-        var query = $"timeout={Math.Max(1, _options.Local.ModelLoadTimeoutSeconds)}";
-        if (entry is not null && catalog!.ExecutionProviderOverride(entry) is { } ep)
+        if ((await LocalHttp.GetAsync(_http, serviceBase, "/openai/status", ProbeTimeout, cancellationToken)).IsSuccess
+            || IsModelArray(await LocalHttp.GetAsync(_http, serviceBase, "/openai/loadedmodels", ProbeTimeout, cancellationToken)))
         {
-            query += $"&ep={ep}";
+            return new FoundryServiceApi(_http, serviceBase, loadTimeout);
         }
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.Local.ModelLoadTimeoutSeconds)));
-        var url = new Uri(serviceBase, $"openai/load/{PathSegment(loadId)}?{query}");
-        try
-        {
-            using var response = await _probeClient.GetAsync(url, cts.Token);
-            if (response.IsSuccessStatusCode)
-            {
-                return null;
-            }
-
-            var body = (await response.Content.ReadAsStringAsync(cts.Token)).Trim();
-            return $"Foundry Local could not load model '{loadId}' (HTTP {(int)response.StatusCode}{(body.Length > 0 ? $": {Truncate(body)}" : "")}). " +
-                   $"Check that it is downloaded with 'foundry cache list', or download it with 'foundry model download {loadId}'.";
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return $"Model '{loadId}' did not finish loading within {_options.Local.ModelLoadTimeoutSeconds}s. Load it first with 'foundry model run {loadId}'.";
-        }
-        catch (HttpRequestException ex)
-        {
-            return $"Loading model '{loadId}' failed: {ex.Message}";
-        }
+        return new OpenAICompatibleApi(_http, serviceBase);
     }
 
-    /// <summary>
-    /// Whether the active model is in Foundry Local's memory right now. The service is found again first, so a
-    /// restart on a new port is followed, and a failed listing is retried once before it counts as a failure.
-    /// </summary>
-    /// <param name="cancellationToken">Cancels the check.</param>
-    public async Task<ActiveModelState> GetActiveModelStateAsync(CancellationToken cancellationToken = default)
-    {
-        await _gate.WaitAsync(cancellationToken);
-        try
-        {
-            var (serviceBase, problem) = await FindReachableServiceAsync(cancellationToken);
-            if (serviceBase is null)
-            {
-                return new ActiveModelState(ActiveModelStateKind.Unknown, problem);
-            }
-
-            var listing = await _catalog.ListModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
-            if (listing.Ids is null)
-            {
-                await Task.Delay(LoadConfirmDelay, cancellationToken);
-                listing = await _catalog.ListModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
-            }
-
-            if (listing.Ids is null)
-            {
-                return new ActiveModelState(ActiveModelStateKind.Unknown,
-                    $"Foundry Local is running at {serviceBase} but could not list its loaded models ({listing.Error}).");
-            }
-
-            var catalog = await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken);
-            if (IsInLoadedList(listing.Ids, _activeModelId, catalog))
-            {
-                return new ActiveModelState(ActiveModelStateKind.Loaded, null);
-            }
-
-            return new ActiveModelState(ActiveModelStateKind.NotLoaded, DescribeLoaded(serviceBase, listing.Ids));
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    // Both Foundry Local versions answer their loaded-model route with a JSON array; a catch-all or error page does not.
+    private static bool IsModelArray(HttpGetResult result) => result.IsSuccess && result.Body.StartsWith('[');
 
     /// <summary>
-    /// A successful load response is not proof: the model counts as loaded only once it is in the service's
-    /// loaded-model list. Checked a few times because the list can lag the load response slightly.
+    /// Loads the active model, then confirms it: a successful load response is not proof, the model counts as loaded
+    /// only once it is in the server's loaded list (checked a few times, as the list can lag the response).
     /// </summary>
-    /// <returns>Null when confirmed; otherwise the reason.</returns>
-    private async Task<string?> ConfirmLoadedAsync(Uri serviceBase, string modelId, CancellationToken cancellationToken)
+    private async Task<(IReadOnlyList<string> Loaded, string? Problem)> LoadAndConfirmAsync(IModelManagementApi api, CancellationToken cancellationToken)
     {
+        var loadProblem = await api.LoadAsync(_activeModelId, cancellationToken);
+        if (loadProblem is not null)
+        {
+            return (Array.Empty<string>(), loadProblem);
+        }
+
+        IReadOnlyList<string> loaded = Array.Empty<string>();
         for (int attempt = 0; attempt < LoadConfirmAttempts; attempt++)
         {
             if (attempt > 0) await Task.Delay(LoadConfirmDelay, cancellationToken);
 
-            var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
-            if (loaded is not null && IsInLoadedList(loaded, modelId, await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken)))
+            loaded = (await api.ListLoadedAsync(cancellationToken)).Ids ?? Array.Empty<string>();
+            if (api.IsLoaded(loaded, _activeModelId))
             {
-                return null;
+                return (loaded, null);
             }
         }
 
-        var reported = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
-        return $"Foundry Local accepted the request to load '{modelId}', but it is not among the loaded models. {DescribeLoaded(serviceBase, reported)} " +
-               $"Try loading it in a terminal with 'foundry model run {modelId}' to see Foundry Local's error.";
+        return (loaded, $"{api.DisplayName} accepted the request to load '{_activeModelId}', but it is not among the loaded models. {DescribeLoaded(api, loaded)} " +
+                        $"Try loading it in a terminal with 'foundry model run {_activeModelId}' to see Foundry Local's error.");
     }
 
-    /// <summary>What the service reports as loaded, so a mismatch (e.g. a different variant loaded) is visible to the user.</summary>
-    private string DescribeLoaded(Uri serviceBase, IReadOnlyList<string> loaded) =>
+    /// <summary>What the server reports as loaded, so a mismatch (e.g. another model loaded) is visible to the user.</summary>
+    private string DescribeLoaded(IModelManagementApi api, IReadOnlyList<string> loaded) =>
         loaded.Count == 0
-            ? $"Foundry Local at {serviceBase} reports no loaded models; the app is set to '{_activeModelId}'."
-            : $"Foundry Local at {serviceBase} reports loaded: {string.Join(", ", loaded)}; the app is set to '{_activeModelId}'.";
+            ? $"{api.DisplayName} reports no loaded models; the app is set to '{_activeModelId}'."
+            : $"{api.DisplayName} reports loaded: {string.Join(", ", loaded)}; the app is set to '{_activeModelId}'.";
 
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
-
-    private const int LoadConfirmAttempts = 4;
-    private static readonly TimeSpan LoadConfirmDelay = TimeSpan.FromMilliseconds(500);
-
-    /// <summary>Returns Foundry Local's catalog, fetching it when missing, stale (new address) or <paramref name="refresh"/> is set.</summary>
-    /// <returns>The catalog, or null when the server has none (e.g. Ollama) or it cannot be read.</returns>
-    private async Task<FoundryCatalog?> GetFoundryCatalogAsync(Uri serviceBase, bool refresh, CancellationToken cancellationToken)
+    /// <summary>
+    /// Chooses the model: the user's choice; else the best preferred model that is loaded; else the best preferred
+    /// model that is downloaded (it is loaded before use); else the configured <c>Local.ModelId</c>. The result is
+    /// normalized to the name the server's load route accepts.
+    /// A weak model that happens to be loaded never outranks a preferred one on disk: loading takes a minute once,
+    /// while a sub-1B model gives poor summaries every time.
+    /// </summary>
+    private async Task SelectModelAsync(IModelManagementApi api, IReadOnlyList<string>? loaded, CancellationToken cancellationToken)
     {
-        if (!refresh && _foundryCatalog is not null && _foundryCatalogBase == serviceBase)
+        string chosen;
+        if (_userSelectedModelId is not null)
         {
-            return _foundryCatalog;
+            chosen = _userSelectedModelId;
+        }
+        else if (!_options.Local.AutoSelectModel)
+        {
+            chosen = _options.LocalModelId;
+        }
+        else
+        {
+            var preferences = _options.Local.GetPreferredModels();
+            var fromLoaded = loaded is { Count: > 0 } ? LocalModelSelector.Select(loaded, preferences, configuredModelId: string.Empty) : string.Empty;
+            if (fromLoaded.Length > 0)
+            {
+                chosen = fromLoaded;
+            }
+            else
+            {
+                var downloaded = (await api.ListDownloadedAsync(cancellationToken)).Ids ?? Array.Empty<string>();
+                chosen = LocalModelSelector.Select(downloaded, preferences, _options.LocalModelId);
+            }
         }
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(TimeSpan.FromSeconds(30));
-        try
-        {
-            using var response = await _probeClient.GetAsync(new Uri(serviceBase, "foundry/list"), cts.Token);
-            if (!response.IsSuccessStatusCode) return null;
-
-            _foundryCatalog = FoundryCatalog.Parse(await response.Content.ReadAsStringAsync(cts.Token));
-            _foundryCatalogBase = serviceBase;
-            return _foundryCatalog;
-        }
-        catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
-                                   || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
-        {
-            // Without the catalog, ids are used as listed; a wrong one then fails with the service's own message.
-            System.Diagnostics.Debug.WriteLine($"[FoundryLocalService] Could not read the model catalog at {serviceBase}: {ex.Message}");
-            return null;
-        }
+        _activeModelId = await api.NormalizeAsync(chosen, cancellationToken);
     }
-
-    private static string ResolveId(FoundryCatalog? catalog, string id) => catalog?.Resolve(id)?.Id ?? id;
-
-    /// <summary>Escapes a model id for a URL path but keeps ':' readable, as the official SDK sends it.</summary>
-    private static string PathSegment(string id) => Uri.EscapeDataString(id).Replace("%3A", ":", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Finds the service base address and confirms something answers there. With auto-discovery, a failed probe
@@ -499,32 +486,46 @@ public sealed class FoundryLocalService : IDisposable
         return (null, $"{probeProblem}{(detail.Length > 0 ? " " + detail : "")}");
     }
 
-    /// <summary>Works out where the service should be: CLI status, then (optionally) starting it, then configuration.</summary>
+    /// <summary>
+    /// Works out where the service should be: the CLI's status (newer "foundry server" first, then the older
+    /// "foundry service"), then (optionally) starting it, then configuration.
+    /// </summary>
     private async Task<Uri> DiscoverAsync(bool discover, List<string> notes, CancellationToken cancellationToken)
     {
         if (discover)
         {
-            var status = await _cli.RunAsync("service status", TimeSpan.FromSeconds(15), cancellationToken);
-            var found = FoundryCli.ParseServiceUri(status.Output);
-            if (found is not null) return found;
+            string? workingNoun = null;
+            foreach (var noun in new[] { "server", "service" })
+            {
+                var status = await _cli.RunAsync($"{noun} status", TimeSpan.FromSeconds(15), cancellationToken);
+                if (FoundryCli.ParseServiceUri(status.Output) is { } found) return found;
 
-            if (status.Problem is not null && status.Output.Length == 0)
-            {
-                notes.Add(status.Problem);                       // CLI not installed or failed to run
+                if (status.Problem is not null && status.Output.Length == 0)
+                {
+                    notes.Add(status.Problem);                   // CLI not installed or failed to run
+                    break;
+                }
+
+                if (status.Succeeded)
+                {
+                    workingNoun = noun;                          // the CLI knows this command; the service is stopped
+                    break;
+                }
             }
-            else if (_options.Local.AutoStartService)
+
+            if (workingNoun is not null && _options.Local.AutoStartService)
             {
-                var start = await _cli.RunAsync("service start", TimeSpan.FromSeconds(90), cancellationToken);
-                found = FoundryCli.ParseServiceUri(start.Output)
-                        ?? FoundryCli.ParseServiceUri((await _cli.RunAsync("service status", TimeSpan.FromSeconds(15), cancellationToken)).Output);
-                if (found is not null) return found;
+                var start = await _cli.RunAsync($"{workingNoun} start", TimeSpan.FromSeconds(90), cancellationToken);
+                var started = FoundryCli.ParseServiceUri(start.Output)
+                              ?? FoundryCli.ParseServiceUri((await _cli.RunAsync($"{workingNoun} status", TimeSpan.FromSeconds(15), cancellationToken)).Output);
+                if (started is not null) return started;
                 notes.Add(start.Problem is null
-                    ? "Foundry Local did not report a service address after 'foundry service start'."
+                    ? $"Foundry Local did not report an address after 'foundry {workingNoun} start'."
                     : $"Starting Foundry Local failed: {start.Problem}");
             }
-            else
+            else if (workingNoun is not null)
             {
-                notes.Add("Foundry Local is not running. Start it with 'foundry service start'.");
+                notes.Add($"Foundry Local is not running. Start it with 'foundry {workingNoun} start'.");
             }
         }
 
@@ -533,105 +534,47 @@ public sealed class FoundryLocalService : IDisposable
         return new Uri($"{configured.Scheme}://{configured.Authority}");
     }
 
-    /// <summary>
-    /// Any HTTP response means a server is listening; only connection failures and timeouts count as down.
-    /// (Foundry Local answers <c>/openai/status</c>; Ollama returns 404 there but is still up.)
-    /// </summary>
+    /// <summary>Any HTTP response means a server is listening; only connection failures and timeouts count as down.</summary>
     /// <returns>Null when reachable; otherwise the reason.</returns>
     private async Task<string?> ProbeAsync(Uri serviceBase, CancellationToken cancellationToken)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // Generous: while Foundry Local loads a model or generates on the CPU it can be slow to answer, and a
-        // timeout here is reported as "not responding".
-        cts.CancelAfter(ProbeTimeout);
-        try
-        {
-            using var response = await _probeClient.GetAsync(new Uri(serviceBase, "openai/status"), cts.Token);
-            return null;
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            return $"The local model service at {serviceBase} did not respond within {ProbeTimeout.TotalSeconds:F0}s.";
-        }
-        catch (HttpRequestException ex)
-        {
-            return $"No local model service is reachable at {serviceBase} ({ex.Message}).";
-        }
+        var result = await LocalHttp.GetAsync(_http, serviceBase, "/status", ProbeTimeout, cancellationToken);
+        return result.Status is not null
+            ? null
+            : $"No local model service is reachable at {serviceBase} ({result.Error}).";
     }
 
-    /// <summary>
-    /// Chooses the model: the user's choice; else the best preferred model that is loaded; else the best preferred
-    /// model that is downloaded (it is loaded before use); else the configured <c>Local.ModelId</c>.
-    /// A weak model that happens to be loaded never outranks a preferred one on disk: loading takes a minute once,
-    /// while a sub-1B model gives poor summaries every time.
-    /// </summary>
-    private async Task SelectModelAsync(Uri serviceBase, IReadOnlyList<string>? loaded, CancellationToken cancellationToken)
+    private IChatClient GetOrCreateClient(Uri serviceBase, string chatModelId)
     {
-        if (_userSelectedModelId is not null)
-        {
-            _activeModelId = _userSelectedModelId;
-            return;
-        }
-
-        if (!_options.Local.AutoSelectModel)
-        {
-            _activeModelId = _options.LocalModelId;
-            return;
-        }
-
-        var preferences = _options.Local.GetPreferredModels();
-        if (loaded is { Count: > 0 })
-        {
-            var fromLoaded = LocalModelSelector.Select(loaded, preferences, configuredModelId: string.Empty);
-            if (fromLoaded.Length > 0)
-            {
-                _activeModelId = fromLoaded;
-                return;
-            }
-        }
-
-        var downloaded = await ListDownloadedAsync(serviceBase, cancellationToken);
-        _activeModelId = LocalModelSelector.Select(downloaded, preferences, _options.LocalModelId);
-    }
-
-    private IChatClient GetOrCreateClient(Uri serviceBase)
-    {
-        var key = $"{serviceBase}|{_activeModelId}";
+        var key = $"{serviceBase}|{chatModelId}";
         if (_client is not null && _clientKey == key) return _client;
 
         _client?.Dispose();
-        _client = CreateChatClient(new Uri(serviceBase, "v1"), _activeModelId, TimeSpan.FromSeconds(Math.Max(1, _options.Local.TimeoutSeconds)), _chatTransport);
+        _client = CreateChatClient(new Uri(serviceBase, "v1"), chatModelId, TimeSpan.FromSeconds(Math.Max(1, _options.Local.TimeoutSeconds)), _chatTransport);
         _clientKey = key;
         return _client;
     }
 
-    /// <summary>
-    /// Creates an OpenAI-compatible chat client for a local server, with the request fix-ups local servers need
-    /// (see <see cref="MaxTokensCompatibilityPolicy"/>).
-    /// </summary>
-    /// <param name="endpoint">The OpenAI-compatible base address (…/v1).</param>
-    /// <param name="modelId">Model to send requests to.</param>
-    /// <param name="networkTimeout">Maximum wait for one response.</param>
-    /// <param name="transport">HTTP transport; tests pass a fake, null uses the default.</param>
-    public static IChatClient CreateChatClient(Uri endpoint, string modelId, TimeSpan networkTimeout, PipelineTransport? transport = null)
-    {
-        var clientOptions = new OpenAIClientOptions { Endpoint = endpoint, NetworkTimeout = networkTimeout };
-        if (transport is not null) clientOptions.Transport = transport;
-        clientOptions.AddPolicy(new MaxTokensCompatibilityPolicy(), PipelinePosition.PerCall);
+    private static bool IsChatModel(string id) =>
+        !NonChatMarkers.Any(marker => id.Contains(marker, StringComparison.OrdinalIgnoreCase));
 
-        return new OpenAIClient(new ApiKeyCredential("local-foundry-key"), clientOptions).GetChatClient(modelId).AsIChatClient();
+    private static string StripVersion(string id)
+    {
+        int colon = id.LastIndexOf(':');
+        return colon > 0 && colon < id.Length - 1 && id.AsSpan(colon + 1).IndexOfAnyExceptInRange('0', '9') < 0
+            ? id[..colon]
+            : id;
     }
 
     private LocalModelStatus Unavailable(string problem) => new(false, Endpoint, _activeModelId, problem, null);
 
     private static bool IsAuto(string endpoint) => string.Equals(endpoint, "auto", StringComparison.OrdinalIgnoreCase);
 
-    private static string Truncate(string text) => text.Length <= 200 ? text : text[..200] + "…";
-
+    /// <inheritdoc />
     public void Dispose()
     {
         _client?.Dispose();
-        _probeClient.Dispose();
+        _http.Dispose();
         _gate.Dispose();
     }
 }
