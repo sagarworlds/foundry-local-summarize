@@ -1,12 +1,27 @@
-﻿using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.AI.Evaluation;
+using FoundrySummarizer.Core.Evaluation.FactChecking;
 
 namespace FoundrySummarizer.Core.Evaluation.Evaluators;
 
+/// <summary>
+/// Anti-hallucination metric: the share of the summary's checkable claims (amounts, percentages, multiples,
+/// periods, dates and names) that the source document states. The source is the first user message; an
+/// optional <see cref="ReferenceMaterialContext"/> adds material the model may also quote.
+/// Each unsupported claim is reported as a warning diagnostic so reviewers can see exactly what to check.
+/// </summary>
 public class GroundingEvaluator : IEvaluator
 {
     public const string MetricName = "Grounding";
+
+    /// <summary>Below this share of supported claims the metric fails.</summary>
+    public const double PassThreshold = 0.70;
+
+    /// <summary>At or above this share the metric is rated Good.</summary>
+    public const double GoodThreshold = 0.90;
+
+    // Enough to act on without flooding the diagnostic list for a badly hallucinated summary.
+    private const int MaxListedClaims = 15;
 
     public IReadOnlyCollection<string> EvaluationMetricNames => new[] { MetricName };
 
@@ -17,50 +32,53 @@ public class GroundingEvaluator : IEvaluator
         IEnumerable<EvaluationContext>? additionalContext = null,
         CancellationToken cancellationToken = default)
     {
-        var userText = messages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text ?? string.Empty;
+        var sourceText = messages.FirstOrDefault(m => m.Role == ChatRole.User)?.Text ?? string.Empty;
+        var referenceText = additionalContext?.OfType<ReferenceMaterialContext>().FirstOrDefault()?.Text;
         var summaryText = response.Text ?? string.Empty;
 
-        double score = CalculateGrounding(userText, summaryText);
-        var metric = new NumericMetric(MetricName, score)
-        {
-            Interpretation = new EvaluationMetricInterpretation(
-                score >= 0.85 ? EvaluationRating.Good :
-                score >= 0.65 ? EvaluationRating.Average : EvaluationRating.Poor,
-                failed: score < 0.65)
-        };
+        var metric = string.IsNullOrWhiteSpace(summaryText)
+            ? CreateMetric(0.0, "The summary is empty.")
+            : Evaluate(summaryText, sourceText, referenceText);
 
         var result = new EvaluationResult();
         result.Metrics[MetricName] = metric;
         return ValueTask.FromResult(result);
     }
 
-    private double CalculateGrounding(string sourceAndContext, string summary)
+    private static NumericMetric Evaluate(string summaryText, string sourceText, string? referenceText)
     {
-        if (string.IsNullOrWhiteSpace(summary)) return 0.0;
-        if (string.IsNullOrWhiteSpace(sourceAndContext)) return 1.0;
+        var report = FactChecker.Check(summaryText, sourceText, referenceText);
+        var metric = CreateMetric(report.Score, report.Describe());
 
-        // Extract currency amounts in summary
-        var currencyMatches = Regex.Matches(summary, @"\$[\d,]+(\.\d+)?", RegexOptions.IgnoreCase);
-        int totalFacts = currencyMatches.Count;
-        int groundedFacts = 0;
-
-        foreach (Match match in currencyMatches)
+        var diagnostics = new List<EvaluationDiagnostic>();
+        if (report.IsOfflineDemoOutput)
         {
-            // Normalize currency (e.g. $150,000 -> 150000 or 150,000)
-            var clean = match.Value.Replace("$", "").Replace(",", "").Trim();
-            if (sourceAndContext.Contains(match.Value) || sourceAndContext.Contains(clean))
-            {
-                groundedFacts++;
-            }
+            diagnostics.Add(EvaluationDiagnostic.Error("Grounding: the summary is canned offline demo output, not generated from the document. Start Foundry Local and regenerate."));
         }
 
-        // If no currency amounts, evaluate key technical terms
-        if (totalFacts == 0)
+        var unsupported = report.Unsupported;
+        diagnostics.AddRange(unsupported.Take(MaxListedClaims).Select(f =>
+            EvaluationDiagnostic.Warning($"Unverified {f.Fact.Kind.ToString().ToLowerInvariant()} \"{f.Fact.Text}\": {f.MissingDetail}.")));
+
+        if (unsupported.Count > MaxListedClaims)
         {
-            return 0.95; // High confidence baseline for narrative text
+            diagnostics.Add(EvaluationDiagnostic.Warning($"…and {unsupported.Count - MaxListedClaims} more unverified claims."));
         }
 
-        double ratio = (double)groundedFacts / totalFacts;
-        return Math.Round(ratio, 2);
+        if (diagnostics.Count > 0)
+        {
+            metric.Diagnostics = diagnostics;
+        }
+
+        return metric;
     }
+
+    private static NumericMetric CreateMetric(double score, string reason) => new(MetricName, score, reason)
+    {
+        Interpretation = new EvaluationMetricInterpretation(
+            score >= GoodThreshold ? EvaluationRating.Good :
+            score >= PassThreshold ? EvaluationRating.Average : EvaluationRating.Poor,
+            failed: score < PassThreshold,
+            reason: reason)
+    };
 }

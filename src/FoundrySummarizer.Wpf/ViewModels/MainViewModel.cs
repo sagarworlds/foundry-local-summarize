@@ -92,7 +92,7 @@ public partial class MainViewModel : ObservableObject
             SummarizerVm.CurrentDocumentText = result.ExtractedText;
 
             AgenticVm.UpdateContext(result.FileName, result.ExtractedText, SummarizerVm.GeneratedSummary);
-            EvaluationVm.UpdateContext(result.FileName, SummarizerVm.SelectedPersona?.Name ?? "Executive Bullets", result.ExtractedText, SummarizerVm.GeneratedSummary);
+            EvaluationVm.UpdateContext(result.FileName, SummarizerVm.SelectedPersona?.Name ?? "Executive Bullets", result.ExtractedText, SummarizerVm.GeneratedSummary, SummarizerVm.LastReferenceText);
             ChatVm.InitializeSession(result.FileName, result.ExtractedText, SummarizerVm.GeneratedSummary);
         };
 
@@ -100,7 +100,7 @@ public partial class MainViewModel : ObservableObject
         SummarizerVm.OnSummaryGenerated += (docName, summary) =>
         {
             AgenticVm.UpdateContext(docName, SummarizerVm.CurrentDocumentText, summary);
-            EvaluationVm.UpdateContext(docName, SummarizerVm.SelectedPersona?.Name ?? "Executive Bullets", SummarizerVm.CurrentDocumentText, summary);
+            EvaluationVm.UpdateContext(docName, SummarizerVm.SelectedPersona?.Name ?? "Executive Bullets", SummarizerVm.CurrentDocumentText, summary, SummarizerVm.LastReferenceText);
             ChatVm.InitializeSession(docName, SummarizerVm.CurrentDocumentText, summary);
         };
 

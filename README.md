@@ -136,7 +136,7 @@ Uses `AIFunction` tools from `Microsoft.Extensions.AI`:
 Evaluates summaries against automated quality and safety guardrails:
 - **Completeness Evaluator**: Measures key topic coverage from the source document.
 - **Persona Adherence Evaluator**: Verifies structural compliance with persona rules.
-- **Grounding Evaluator (Anti-Hallucination)**: Verifies all financial numbers and figures against source text.
+- **Grounding Evaluator (Anti-Hallucination)**: Fact-checks every amount, percentage, multiple (e.g. `3x`), period (e.g. `30 days`), date and proper name in the summary against the source document. Formats are normalised (`$150k` = `$150,000`, `28 August 2026` = `Aug 28`), and facts from the persona prompt or matched policies count as grounded. The score is the share of claims the source supports; each unverified claim is listed in the Evaluation tab, and a summary below 70% is marked `NEEDS_REVIEW` however well structured it is.
 - **Content Safety Guardrail**: Intercepts sensitive data leaks (SSNs, credit card patterns, confidential API tokens `sk-...`) with visual alert badges.
 
 ---

@@ -80,7 +80,7 @@
                     <TextBlock Text="Grounding (Anti-Hallucination)" Style="{StaticResource MutedText}" />
                     <TextBlock Text="{Binding GroundingScore, StringFormat='{}{0:P0}'}" FontSize="24" FontWeight="Bold" Foreground="{Binding GroundingScore, Converter={StaticResource ScoreBrush}}" Margin="0,6,0,4" />
                     <ProgressBar Value="{Binding GroundingScore}" Minimum="0" Maximum="1" Height="6" Foreground="{Binding GroundingScore, Converter={StaticResource ScoreBrush}}" Background="{StaticResource BorderBrush}" Margin="0,0,0,6" />
-                    <TextBlock Text="Fact-checks all figures &amp; terms" Style="{StaticResource MutedText}" FontSize="11" />
+                    <TextBlock Text="Figures, dates &amp; names found in source" Style="{StaticResource MutedText}" FontSize="11" />
                 </StackPanel>
             </Border>
 
@@ -130,11 +130,13 @@
                             <DataTemplate>
                                 <Border Style="{StaticResource SurfaceCard}" Margin="0,0,0,8">
                                     <DockPanel>
-                                        <StackPanel DockPanel.Dock="Left">
+                                        <!-- Value is docked first so the text column fills the rest and can wrap. -->
+                                        <TextBlock Text="{Binding Value, StringFormat='{}{0:P0}'}" FontWeight="Bold" FontSize="16" Foreground="{Binding Value, Converter={StaticResource ScoreBrush}}" DockPanel.Dock="Right" Margin="12,0,0,0" VerticalAlignment="Center" />
+                                        <StackPanel>
                                             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" FontSize="13" />
                                             <TextBlock Text="{Binding Interpretation, StringFormat='Rating: {0}'}" Style="{StaticResource MutedText}" Margin="0,2,0,0" />
+                                            <TextBlock Text="{Binding Details}" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,2,0,0" />
                                         </StackPanel>
-                                        <TextBlock Text="{Binding Value, StringFormat='{}{0:P0}'}" FontWeight="Bold" FontSize="16" Foreground="{Binding Value, Converter={StaticResource ScoreBrush}}" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center" />
                                     </DockPanel>
                                 </Border>
                             </DataTemplate>
@@ -148,12 +150,14 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
                     <TextBlock Grid.Row="0" Text="Guardrail Warnings &amp; Diagnostic Log" Style="{StaticResource HeadingMedium}" Margin="0,0,0,10" />
 
-                    <ListBox Grid.Row="1" ItemsSource="{Binding GuardrailWarnings}"
+                    <ListBox Grid.Row="1" ItemsSource="{Binding GuardrailWarnings}" MaxHeight="160"
                              Background="Transparent" BorderThickness="0"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ItemTemplate>
@@ -162,6 +166,24 @@
                                     <DockPanel>
                                         <TextBlock Text="🚨 " FontSize="14" DockPanel.Dock="Left" />
                                         <TextBlock Text="{Binding}" Foreground="#fca5a5" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap" />
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- Claims in the summary that the source document does not state; check these before sharing. -->
+                    <TextBlock Grid.Row="2" Text="Fact Check: Unverified Claims" Style="{StaticResource HeadingMedium}" Margin="0,12,0,10" />
+
+                    <ListBox Grid.Row="3" ItemsSource="{Binding Diagnostics}"
+                             Background="Transparent" BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="#422006" BorderBrush="{StaticResource WarningBrush}" BorderThickness="1" CornerRadius="6" Padding="10" Margin="0,0,0,8">
+                                    <DockPanel>
+                                        <TextBlock Text="⚠️ " FontSize="14" DockPanel.Dock="Left" />
+                                        <TextBlock Text="{Binding}" Foreground="#fde68a" FontSize="12" TextWrapping="Wrap" />
                                     </DockPanel>
                                 </Border>
                             </DataTemplate>

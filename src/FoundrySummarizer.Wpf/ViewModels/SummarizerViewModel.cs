@@ -45,6 +45,12 @@ public partial class SummarizerViewModel : ObservableObject
     public ObservableCollection<PromptyDocument> AvailablePersonas { get; } = new();
 
     public string CurrentDocumentText { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The persona prompt and policy context used for the last summary. The evaluator treats facts found
+    /// here as legitimately quotable, so citing a policy threshold is not reported as a hallucination.
+    /// </summary>
+    public string LastReferenceText { get; private set; } = string.Empty;
     public string CurrentDocumentName { get; set; } = string.Empty;
 
     public event Action<string, string>? OnSummaryGenerated;
@@ -130,6 +136,7 @@ public partial class SummarizerViewModel : ObservableObject
             var result = await _summarizer.SummarizeAsync(request, progress);
 
             GeneratedSummary = result.Summary;
+            LastReferenceText = string.Join("\n\n", activeDoc.SystemPrompt, activeDoc.UserPromptTemplate, groundingContext);
             var route = LastRoutingInfo?.RouteName ?? "Foundry Local";
             GenerationStatus = result.UsedMultiPart
                 ? $"Summary generated from {result.PartCount} document parts via {route}"

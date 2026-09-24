@@ -43,6 +43,9 @@ public partial class EvaluationViewModel : ObservableObject
     [ObservableProperty]
     private string _statusMessage = "Ready to evaluate summary rigor with Microsoft.Extensions.AI.Evaluation.";
 
+    /// <summary>Persona prompt and policies the summary was generated with; facts found here count as grounded.</summary>
+    public string ReferenceText { get; private set; } = string.Empty;
+
     public ObservableCollection<MetricScore> Metrics { get; } = new();
     public ObservableCollection<string> GuardrailWarnings { get; } = new();
     public ObservableCollection<string> Diagnostics { get; } = new();
@@ -52,8 +55,9 @@ public partial class EvaluationViewModel : ObservableObject
         _pipeline = pipeline;
     }
 
-    public void UpdateContext(string docName, string persona, string sourceText, string summary)
+    public void UpdateContext(string docName, string persona, string sourceText, string summary, string referenceText = "")
     {
+        ReferenceText = referenceText;
         DocumentName = docName;
         PersonaName = persona;
         SourceDocumentText = sourceText;
@@ -78,7 +82,8 @@ public partial class EvaluationViewModel : ObservableObject
                 documentName: DocumentName,
                 personaName: PersonaName,
                 sourceDocumentText: SourceDocumentText,
-                summaryText: SummaryText
+                summaryText: SummaryText,
+                referenceText: ReferenceText
             );
 
             CompletenessScore = report.CompletenessScore;

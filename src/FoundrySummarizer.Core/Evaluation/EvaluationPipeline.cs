@@ -7,16 +7,32 @@ namespace FoundrySummarizer.Core.Evaluation;
 
 public interface IEvaluationPipeline
 {
+    /// <summary>Runs every evaluator over a summary and combines the results into a report.</summary>
+    /// <param name="documentName">Shown in the report.</param>
+    /// <param name="personaName">Persona the summary was written for.</param>
+    /// <param name="sourceDocumentText">The document that was summarized.</param>
+    /// <param name="summaryText">The summary to evaluate.</param>
+    /// <param name="referenceText">
+    /// Other material the model was given and may quote (persona prompt, matched policies). Facts found only
+    /// here still count as grounded; pass null when there is none.
+    /// </param>
+    /// <param name="cancellationToken">Cancels evaluation.</param>
     Task<SummaryEvaluationReport> EvaluateSummaryAsync(
         string documentName,
         string personaName,
         string sourceDocumentText,
         string summaryText,
+        string? referenceText = null,
         CancellationToken cancellationToken = default);
 }
 
 public class EvaluationPipeline : IEvaluationPipeline
 {
+    // Overall status gates. Grounding gates every positive status: a well-structured summary that
+    // states unsupported facts is still wrong, so it must be reviewed however complete it looks.
+    private const double ExcellentThreshold = 0.70;
+    private const double GoodThreshold = 0.50;
+
     private readonly List<IEvaluator> _evaluators;
 
     public EvaluationPipeline(IEnumerable<IEvaluator>? evaluators = null)
@@ -35,8 +51,13 @@ public class EvaluationPipeline : IEvaluationPipeline
         string personaName,
         string sourceDocumentText,
         string summaryText,
+        string? referenceText = null,
         CancellationToken cancellationToken = default)
     {
+        var context = string.IsNullOrWhiteSpace(referenceText)
+            ? null
+            : new EvaluationContext[] { new ReferenceMaterialContext(referenceText) };
+
         var chatMessages = new List<ChatMessage>
         {
             new(ChatRole.System, $"Persona: {personaName}"),
@@ -55,7 +76,7 @@ public class EvaluationPipeline : IEvaluationPipeline
 
         foreach (var evaluator in _evaluators)
         {
-            var evalResult = await evaluator.EvaluateAsync(chatMessages, chatResponse, cancellationToken: cancellationToken);
+            var evalResult = await evaluator.EvaluateAsync(chatMessages, chatResponse, additionalContext: context, cancellationToken: cancellationToken);
 
             foreach (var (metricName, metric) in evalResult.Metrics)
             {
@@ -69,7 +90,7 @@ public class EvaluationPipeline : IEvaluationPipeline
                     else if (metricName == PersonaAdherenceEvaluator.MetricName) adherence = val;
                     else if (metricName == GroundingEvaluator.MetricName) grounding = val;
 
-                    scoresList.Add(new MetricScore(metricName, val, rating, passed));
+                    scoresList.Add(new MetricScore(metricName, val, rating, passed, numMetric.Reason));
                 }
                 else if (metric is BooleanMetric boolMetric)
                 {
@@ -99,11 +120,13 @@ public class EvaluationPipeline : IEvaluationPipeline
 
         string overallStatus = !safetyPassed
             ? "BLOCKED_BY_GUARDRAIL"
-            : (completeness >= 0.70 && adherence >= 0.70 && grounding >= 0.70)
-                ? "EXCELLENT"
-                : (completeness >= 0.50 && adherence >= 0.50)
-                    ? "GOOD"
-                    : "NEEDS_REVIEW";
+            : grounding < GroundingEvaluator.PassThreshold
+                ? "NEEDS_REVIEW"
+                : (completeness >= ExcellentThreshold && adherence >= ExcellentThreshold && grounding >= GroundingEvaluator.GoodThreshold)
+                    ? "EXCELLENT"
+                    : (completeness >= GoodThreshold && adherence >= GoodThreshold)
+                        ? "GOOD"
+                        : "NEEDS_REVIEW";
 
         return new SummaryEvaluationReport(
             DocumentName: documentName,
