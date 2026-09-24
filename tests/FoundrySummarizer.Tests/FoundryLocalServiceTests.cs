@@ -229,6 +229,66 @@ public class FoundryLocalServiceTests
         Assert.DoesNotContain("context", ex.Message);
     }
 
+    [Fact]
+    public async Task SwitchingModels_UnloadsThePreviousOneBeforeLoadingTheNewOne()
+    {
+        var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "qwen2.5-0.5b-instruct-generic-cpu" };
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path =>
+        {
+            var model = Uri.UnescapeDataString(path.Split('/').Last().Split('?')[0]);
+            if (path == "/openai/loadedmodels") return FakeServer.Json(System.Text.Json.JsonSerializer.Serialize(loaded));
+            if (path == "/openai/models") return FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu","Phi-4-mini-instruct-generic-gpu:5"]""");
+            if (path.StartsWith("/openai/unload/")) { loaded.Remove(model); return FakeServer.Json("{}"); }
+            if (path.StartsWith("/openai/load/")) { loaded.Add(model); return FakeServer.Json("{}"); }
+            return FakeServer.Json("{}");
+        });
+        var options = Options();
+        options.Local.AutoSelectModel = false; // start on the configured qwen model
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
+        Assert.True((await client.LoadActiveModelAsync()).IsAvailable);
+
+        var result = await client.SwitchModelAsync("Phi-4-mini-instruct-generic-gpu:5");
+
+        Assert.True(result.Status.IsAvailable, result.Status.Problem);
+        Assert.Null(result.UnloadProblem);
+        Assert.Equal("Phi-4-mini-instruct-generic-gpu:5", result.Status.ModelId);
+        Assert.Equal(new[] { "Phi-4-mini-instruct-generic-gpu:5" }, loaded);
+
+        var unload = server.Requests.FindIndex(r => r.StartsWith("/openai/unload/qwen2.5-0.5b-instruct-generic-cpu"));
+        var load = server.Requests.FindIndex(r => r.StartsWith("/openai/load/Phi-4-mini"));
+        Assert.InRange(unload, 0, load - 1); // unloaded first, so both never compete for GPU memory
+    }
+
+    [Fact]
+    public async Task SwitchingModels_ReportsAFailedUnloadButStillLoadsTheNewModel()
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            _ when path.StartsWith("/openai/unload/") => new HttpResponseMessage(HttpStatusCode.InternalServerError),
+            "/openai/loadedmodels" => FakeServer.Json("[]"),
+            _ => FakeServer.Json("{}")
+        });
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
+        await client.GetStatusAsync();
+
+        var result = await client.SwitchModelAsync("Phi-4-mini-instruct-generic-gpu:5");
+
+        Assert.True(result.Status.IsAvailable, result.Status.Problem);
+        Assert.Contains("could not unload 'qwen2.5-0.5b-instruct-generic-cpu' (HTTP 500)", result.UnloadProblem);
+    }
+
+    [Fact]
+    public async Task Unload_TreatsServersWithoutTheRouteAsSuccess()
+    {
+        var server = new FakeServer(new[] { "localhost:11434" }, _ => FakeServer.NotFound());
+        var options = Options(o => { o.AutoDiscover = false; o.Endpoint = "http://localhost:11434/v1"; });
+        using var service = new FoundryLocalService(options, FakeCli.NotInstalled(), server);
+        await service.CheckAsync(ensureModelLoaded: false);
+
+        Assert.Null(await service.UnloadModelAsync("llama3.2:3b"));
+    }
+
     [Theory]
     [InlineData("Phi-4-mini-instruct-generic-gpu:5", "Phi-4-mini-instruct-generic-gpu", true)]
     [InlineData("phi-4-mini-instruct-generic-gpu", "Phi-4-mini-instruct-generic-gpu:12", true)]

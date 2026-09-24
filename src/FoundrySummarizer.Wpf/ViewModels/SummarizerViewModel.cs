@@ -20,6 +20,8 @@ public partial class SummarizerViewModel : ObservableObject
     private readonly IDocumentPicker _documentPicker;
     private readonly IClipboardService _clipboard;
     private readonly SummarizationConfig _summarizationConfig;
+    private readonly IModelReadiness _modelReadiness;
+    private readonly IActivityTracker _activity;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasDocument))]
@@ -71,14 +73,26 @@ public partial class SummarizerViewModel : ObservableObject
     /// <param name="documentPicker">Asks the user for a file.</param>
     /// <param name="clipboard">Copies the summary.</param>
     /// <param name="summarizationConfig">Used to tell the user when a document will be read in parts.</param>
+    /// <param name="modelReadiness">Summarizing is disabled until a model is loaded.</param>
+    /// <param name="activity">Marks a running summary, so the model is not switched meanwhile.</param>
     public SummarizerViewModel(
         IDocumentIngestionPipeline ingestion,
         IPromptyEngine promptyEngine,
         IDocumentSummarizer summarizer,
         IDocumentPicker documentPicker,
         IClipboardService clipboard,
-        SummarizationConfig summarizationConfig)
+        SummarizationConfig summarizationConfig,
+        IModelReadiness modelReadiness,
+        IActivityTracker activity)
     {
+        _modelReadiness = modelReadiness;
+        _activity = activity;
+        _modelReadiness.ReadinessChanged += (_, _) =>
+        {
+            GenerateSummaryCommand.NotifyCanExecuteChanged();
+            OpenDocumentCommand.NotifyCanExecuteChanged();
+        };
+
         _ingestion = ingestion;
         _summarizer = summarizer;
         _documentPicker = documentPicker;
@@ -100,7 +114,9 @@ public partial class SummarizerViewModel : ObservableObject
         }
     }
 
-    private bool CanOpenDocument() => !IsLoadingDocument && !GenerateSummaryCommand.IsRunning;
+    private bool CanOpenDocument() => !IsLoadingDocument && !GenerateSummaryCommand.IsRunning && !_modelReadiness.IsModelLoading;
+
+    private bool CanGenerateSummary() => HasDocument && _modelReadiness.IsModelReady;
 
     /// <summary>
     /// Extracts the text of <paramref name="filePath"/> and makes it the document to summarize, clearing the
@@ -142,7 +158,7 @@ public partial class SummarizerViewModel : ObservableObject
     }
 
     /// <summary>Summarizes the loaded document in the selected style. Cancellable via <c>GenerateSummaryCancelCommand</c>.</summary>
-    [RelayCommand(CanExecute = nameof(HasDocument), IncludeCancelCommand = true)]
+    [RelayCommand(CanExecute = nameof(CanGenerateSummary), IncludeCancelCommand = true)]
     private async Task GenerateSummaryAsync(CancellationToken cancellationToken)
     {
         if (SelectedPersona is null)
@@ -151,6 +167,7 @@ public partial class SummarizerViewModel : ObservableObject
             return;
         }
 
+        using var busy = _activity.Begin();
         OpenDocumentCommand.NotifyCanExecuteChanged();
         SetStatus($"Summarizing with {SelectedPersona.Name}...");
         try

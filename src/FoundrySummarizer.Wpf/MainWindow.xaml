@@ -19,6 +19,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -42,12 +43,15 @@
                 </StackPanel>
 
                 <!-- Foundry Local: status dot, model picker, status text, refresh -->
-                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <StackPanel DataContext="{Binding ModelPicker}" Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <Ellipse Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center">
                         <Ellipse.Style>
                             <Style TargetType="Ellipse">
-                                <Setter Property="Fill" Value="{StaticResource WarningBrush}" />
+                                <Setter Property="Fill" Value="{StaticResource DangerBrush}" />
                                 <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsModelLoading}" Value="True">
+                                        <Setter Property="Fill" Value="{StaticResource WarningBrush}" />
+                                    </DataTrigger>
                                     <DataTrigger Binding="{Binding IsModelReady}" Value="True">
                                         <Setter Property="Fill" Value="{StaticResource SuccessBrush}" />
                                     </DataTrigger>
@@ -58,7 +62,7 @@
                     <TextBlock Text="Model:" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,6,0" />
                     <ComboBox ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel}"
                               IsEnabled="{Binding CanChangeModel}" Width="290" Height="32" Margin="0,0,10,0"
-                              ToolTip="Models downloaded on this PC. Download more with: foundry model download &lt;model&gt;">
+                              ToolTip="Models downloaded on this PC. Choosing one unloads the current model and loads the new one.">
                         <ComboBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal">
@@ -69,17 +73,30 @@
                             </DataTemplate>
                         </ComboBox.ItemTemplate>
                     </ComboBox>
-                    <TextBlock Text="{Binding ModelStatusText}" ToolTip="{Binding ModelStatusText}"
-                               Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" MaxWidth="260"
+                    <TextBlock Text="{Binding StatusText}" ToolTip="{Binding StatusText}"
+                               Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" MaxWidth="240"
                                TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,10,0" />
                     <Button Content="↻" Style="{StaticResource SecondaryButton}" Command="{Binding RefreshModelsCommand}"
-                            Padding="10,4" FontSize="13" ToolTip="Refresh the model list (starts Foundry Local if it is not running)" />
+                            Padding="10,4" FontSize="13" ToolTip="Refresh the model list and load the model (starts Foundry Local if it is not running)" />
                 </StackPanel>
             </DockPanel>
         </Border>
 
         <!-- Tab content (headers hidden; the buttons above switch tabs) -->
-        <TabControl Grid.Row="1" SelectedIndex="{Binding SelectedTabIndex}" Background="Transparent" BorderThickness="0" Margin="0" Padding="0">
+        <!-- No model loaded: summarizing and chat are disabled until one is -->
+        <Border Grid.Row="1" Background="#3b1d1d" BorderBrush="{StaticResource DangerBrush}" BorderThickness="0,0,0,1" Padding="16,8"
+                Visibility="{Binding ModelPicker.ShowNotReadyBanner, Converter={StaticResource BoolToVis}}">
+            <DockPanel>
+                <Button Content="↻ Try Again" Style="{StaticResource SecondaryButton}" Command="{Binding ModelPicker.RefreshModelsCommand}"
+                        DockPanel.Dock="Right" Padding="10,4" FontSize="12" />
+                <TextBlock TextWrapping="Wrap" VerticalAlignment="Center" Foreground="{StaticResource TextPrimaryBrush}" FontSize="12">
+                    <Run Text="No model is loaded, so summarizing and chat are disabled." FontWeight="SemiBold" />
+                    <Run Text="{Binding ModelPicker.StatusText, Mode=OneWay}" />
+                </TextBlock>
+            </DockPanel>
+        </Border>
+
+        <TabControl Grid.Row="2" SelectedIndex="{Binding SelectedTabIndex}" Background="Transparent" BorderThickness="0" Margin="0" Padding="0">
             <TabControl.ItemContainerStyle>
                 <Style TargetType="TabItem">
                     <Setter Property="Visibility" Value="Collapsed" />
@@ -94,5 +111,18 @@
                 <views:ChatView DataContext="{Binding ChatVm}" />
             </TabItem>
         </TabControl>
+
+        <!-- Model loading: covers the tabs so nothing can be used until the model is ready -->
+        <Grid Grid.Row="1" Grid.RowSpan="2" Background="#CC090d16"
+              Visibility="{Binding ModelPicker.IsModelLoading, Converter={StaticResource BoolToVis}}">
+            <Border Style="{StaticResource ModernCard}" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="32,24" MinWidth="380">
+                <StackPanel>
+                    <TextBlock Text="⏳" FontSize="28" HorizontalAlignment="Center" Margin="0,0,0,10" />
+                    <TextBlock Text="{Binding ModelPicker.LoadingText}" Foreground="{StaticResource TextPrimaryBrush}" FontSize="14"
+                               TextAlignment="Center" TextWrapping="Wrap" Margin="0,0,0,14" />
+                    <ProgressBar IsIndeterminate="True" Height="5" Foreground="{StaticResource AccentPrimaryBrush}" Background="{StaticResource BorderBrush}" />
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Window>

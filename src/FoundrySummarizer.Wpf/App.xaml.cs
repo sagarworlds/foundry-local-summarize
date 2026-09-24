@@ -43,6 +43,11 @@ public partial class App : Application
         services.AddSingleton<IDocumentPicker, OpenFileDocumentPicker>();
         services.AddSingleton<IClipboardService, WpfClipboardService>();
         services.AddSingleton<IUserSettingsStore, JsonUserSettingsStore>();
+        services.AddSingleton<IActivityTracker, ActivityTracker>();
+
+        // The picker owns the model state; the screens only see whether a model is ready (IModelReadiness).
+        services.AddSingleton<ModelPickerViewModel>();
+        services.AddSingleton<IModelReadiness>(sp => sp.GetRequiredService<ModelPickerViewModel>());
 
         services.AddSingleton<SummarizerViewModel>();
         services.AddSingleton<ChatViewModel>();

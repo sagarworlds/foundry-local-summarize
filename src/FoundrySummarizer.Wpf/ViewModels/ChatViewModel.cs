@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FoundrySummarizer.Core.Chat;
 using FoundrySummarizer.Core.Routing;
+using FoundrySummarizer.Wpf.Services;
 
 namespace FoundrySummarizer.Wpf.ViewModels;
 
@@ -41,6 +42,8 @@ public record ChatMessageItem(ChatSender Sender, string Text, DateTime Timestamp
 public partial class ChatViewModel : ObservableObject
 {
     private readonly DocumentChatAgent _agent;
+    private readonly IModelReadiness _modelReadiness;
+    private readonly IActivityTracker _activity;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendMessageCommand))]
@@ -71,9 +74,18 @@ public partial class ChatViewModel : ObservableObject
     };
 
     /// <param name="agent">Answers questions about the document.</param>
-    public ChatViewModel(DocumentChatAgent agent)
+    /// <param name="modelReadiness">Questions are disabled until a model is loaded.</param>
+    /// <param name="activity">Marks a running answer, so the model is not switched meanwhile.</param>
+    public ChatViewModel(DocumentChatAgent agent, IModelReadiness modelReadiness, IActivityTracker activity)
     {
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
+        _modelReadiness = modelReadiness;
+        _activity = activity;
+        _modelReadiness.ReadinessChanged += (_, _) =>
+        {
+            SendMessageCommand.NotifyCanExecuteChanged();
+            AskSuggestedQuestionCommand.NotifyCanExecuteChanged();
+        };
         Messages.Add(Notice("Open a document on the Summarize tab, then ask questions about it here."));
     }
 
@@ -97,7 +109,7 @@ public partial class ChatViewModel : ObservableObject
         _agent.UpdateSummary(summary);
     }
 
-    private bool CanAsk() => HasDocument && !IsThinking;
+    private bool CanAsk() => HasDocument && !IsThinking && _modelReadiness.IsModelReady;
 
     private bool CanSend() => CanAsk() && !string.IsNullOrWhiteSpace(InputQuestion);
 
@@ -132,6 +144,7 @@ public partial class ChatViewModel : ObservableObject
 
     private async Task AskAsync(string question, CancellationToken cancellationToken)
     {
+        using var busy = _activity.Begin();
         Messages.Add(new ChatMessageItem(ChatSender.User, question, DateTime.Now));
         IsThinking = true;
         try

@@ -17,6 +17,11 @@ public sealed class LocalModelUnavailableException : Exception
     }
 }
 
+/// <summary>Outcome of <see cref="FoundryLocalChatClient.SwitchModelAsync"/>.</summary>
+/// <param name="Status">The new model's state; <see cref="LocalModelStatus.IsAvailable"/> is true once it is loaded.</param>
+/// <param name="UnloadProblem">Why the previous model could not be unloaded, or null.</param>
+public record ModelSwitchResult(LocalModelStatus Status, string? UnloadProblem);
+
 /// <summary>
 /// Sends every request to the model served by Foundry Local (or another OpenAI-compatible local server).
 /// Before each request it makes sure the service is reachable and the model is loaded. It never substitutes
@@ -54,6 +59,27 @@ public sealed class FoundryLocalChatClient : IChatClient
 
     /// <summary>Uses <paramref name="modelId"/> from now on; null returns to automatic selection.</summary>
     public void SelectModel(string? modelId) => _localService.SelectModel(modelId);
+
+    /// <summary>
+    /// Switches to <paramref name="modelId"/>: unloads the current model first (so both never compete for GPU
+    /// memory), then loads the new one.
+    /// </summary>
+    /// <param name="modelId">A model id from <see cref="ListModelsAsync"/>.</param>
+    /// <param name="cancellationToken">Cancels the switch.</param>
+    /// <returns>The new model's status, plus a warning if the previous model could not be unloaded.</returns>
+    public async Task<ModelSwitchResult> SwitchModelAsync(string modelId, CancellationToken cancellationToken = default)
+    {
+        var previous = ActiveModelId;
+        string? unloadProblem = null;
+        if (!FoundryLocalService.SameModel(previous, modelId))
+        {
+            unloadProblem = await _localService.UnloadModelAsync(previous, cancellationToken);
+        }
+
+        SelectModel(modelId);
+        var status = await LoadActiveModelAsync(cancellationToken);
+        return new ModelSwitchResult(status, unloadProblem);
+    }
 
     /// <summary>Loads the active model into memory now, so the first summary does not wait for it.</summary>
     public Task<LocalModelStatus> LoadActiveModelAsync(CancellationToken cancellationToken = default) =>

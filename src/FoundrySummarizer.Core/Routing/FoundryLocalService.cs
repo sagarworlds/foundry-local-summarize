@@ -122,6 +122,44 @@ public sealed class FoundryLocalService : IDisposable
     }
 
     /// <summary>
+    /// Asks Foundry Local to release <paramref name="modelId"/> from memory (<c>/openai/unload/{model}</c>), freeing
+    /// GPU/RAM for the next model. Servers without the route (e.g. Ollama) are treated as success.
+    /// </summary>
+    /// <returns>Null on success or when there is nothing to unload; otherwise why unloading failed.</returns>
+    public async Task<string?> UnloadModelAsync(string modelId, CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_serviceBase is null) return null;
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(TimeSpan.FromSeconds(60));
+            var url = new Uri(_serviceBase, $"openai/unload/{Uri.EscapeDataString(modelId)}?force=true");
+            try
+            {
+                using var response = await _probeClient.GetAsync(url, cts.Token);
+                // 404: the model was not loaded, or the server has no unload route; either way nothing to free.
+                return response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.NotFound
+                    ? null
+                    : $"Foundry Local could not unload '{modelId}' (HTTP {(int)response.StatusCode}); it stays in memory until its idle timeout.";
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return $"Unloading '{modelId}' did not finish within 60s; it stays in memory until its idle timeout.";
+            }
+            catch (HttpRequestException ex)
+            {
+                return $"Unloading '{modelId}' failed: {ex.Message}";
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
     /// Loads the active model again, e.g. after the service answered "model is not loaded" because it unloaded
     /// the model after its idle time-to-live.
     /// </summary>
