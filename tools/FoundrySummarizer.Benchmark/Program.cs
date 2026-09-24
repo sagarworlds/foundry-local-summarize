@@ -39,17 +39,45 @@ Console.CancelKeyPress += (_, e) =>
 try
 {
     var foundry = LoadFoundryOptions();
-    var endpoint = new Uri(cli.Endpoint ?? foundry.GetEffectiveLocalEndpoint());
-    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-
-    var listedModels = await ListModelsAsync(http, endpoint, cancellation.Token);
-    if (listedModels is null)
+    if (cli.Endpoint is not null)
     {
-        Console.Error.WriteLine($"Cannot reach the model endpoint {endpoint}. Start Foundry Local (`foundry service start`) or pass --endpoint.");
+        // An explicit --endpoint wins over discovery.
+        foundry.Local.Endpoint = cli.Endpoint;
+        foundry.Local.AutoDiscover = false;
+    }
+
+    // Same discovery as the app: `foundry service status` (starting the service if configured), then config.
+    using var localService = new FoundryLocalService(foundry);
+    var status = await localService.CheckAsync(ensureModelLoaded: false, cancellation.Token);
+    if (!status.IsAvailable || status.Endpoint is null)
+    {
+        Console.Error.WriteLine($"Cannot reach a local model service: {status.Problem}");
         return 2;
     }
 
-    var models = await ResolveModelsAsync(cli, foundry, http, endpoint, listedModels, cancellation.Token);
+    var endpoint = status.Endpoint;
+    var serviceBase = new Uri($"{endpoint.Scheme}://{endpoint.Authority}");
+    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    var catalog = new LocalModelCatalog(http);
+    var loadedModels = await catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellation.Token);
+    var listedModels = await catalog.TryGetModelIdsAsync(serviceBase, "/openai/models", cancellation.Token)
+                       ?? await catalog.TryGetModelIdsAsync(serviceBase, "/v1/models", cancellation.Token)
+                       ?? Array.Empty<string>();
+
+    var models = ResolveModels(cli, foundry, loadedModels ?? Array.Empty<string>(), listedModels);
+
+    // Foundry Local serves only loaded models; load each one up front so load time is not counted as
+    // summary time and a model that cannot load is reported once, clearly.
+    if (loadedModels is not null)
+    {
+        foreach (var model in models.Where(m => !loadedModels.Contains(m, StringComparer.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine($"Loading {model}...");
+            var loadProblem = await localService.LoadModelAsync(serviceBase, model, cancellation.Token);
+            if (loadProblem is not null) Console.Error.WriteLine($"  {loadProblem}");
+        }
+    }
+
     var documents = await LoadDocumentsAsync(cli.SamplesDirectory, cancellation.Token);
     var promptyEngine = new PromptyEngine();
     var personas = cli.Personas.Count > 0 ? cli.Personas : promptyEngine.AvailablePersonas.Select(p => p.Name).ToList();
@@ -109,28 +137,10 @@ static FoundryOptions LoadFoundryOptions()
     return options;
 }
 
-// Returns the ids from /v1/models, or null when the endpoint cannot be reached.
-static async Task<IReadOnlyList<string>?> ListModelsAsync(HttpClient http, Uri endpoint, CancellationToken cancellationToken)
-{
-    var url = $"{endpoint.Scheme}://{endpoint.Authority}/v1/models";
-    try
-    {
-        using var response = await http.GetAsync(url, cancellationToken);
-        if (!response.IsSuccessStatusCode) return null;
-        return LocalModelCatalog.ParseModelIds(await response.Content.ReadAsStringAsync(cancellationToken));
-    }
-    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
-    {
-        Console.Error.WriteLine($"Model listing at {url} failed: {ex.Message}");
-        return null;
-    }
-}
-
 // Resolves --models aliases to served ids; with no --models, benchmarks every loaded model.
-static async Task<IReadOnlyList<string>> ResolveModelsAsync(
-    BenchmarkCliOptions cli, FoundryOptions foundry, HttpClient http, Uri endpoint, IReadOnlyList<string> listedModels, CancellationToken cancellationToken)
+static IReadOnlyList<string> ResolveModels(
+    BenchmarkCliOptions cli, FoundryOptions foundry, IReadOnlyList<string> loaded, IReadOnlyList<string> listedModels)
 {
-    var loaded = await new LocalModelCatalog(http).GetLoadedModelIdsAsync(endpoint, cancellationToken);
     var available = loaded.Concat(listedModels).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
     if (cli.Models.Count > 0)
@@ -144,7 +154,7 @@ static async Task<IReadOnlyList<string>> ResolveModelsAsync(
     }
 
     // Speech and embedding models share the listing but cannot summarize.
-    var candidates = (loaded.Count > 0 ? loaded : Array.Empty<string>())
+    var candidates = loaded
         .Where(id => !id.Contains("whisper", StringComparison.OrdinalIgnoreCase) && !id.Contains("embed", StringComparison.OrdinalIgnoreCase))
         .ToList();
 

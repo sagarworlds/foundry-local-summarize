@@ -175,6 +175,19 @@ Or open `FoundrySummarizer.sln` in Visual Studio 2022 / 2026 and press **F5**.
 
 ---
 
+## 🩺 Troubleshooting: "Offline demo output"
+
+If a summary starts with **⚠️ Offline demo output**, no language model answered and the text is a canned template, not a summary of your document. The **Why:** line under it (also shown in the status bar) gives the cause:
+
+| Why says… | Fix |
+|---|---|
+| `The 'foundry' command was not found` | Install Foundry Local: `winget install Microsoft.FoundryLocal`, then restart the app. |
+| `No local model service is reachable at …` | Start it: `foundry service start` (the app also tries this when `AutoStartService` is on). |
+| `could not load model '…'` | Download a model: `foundry model download phi-4-mini`, or run it once: `foundry model run phi-4-mini`. |
+| `did not answer within …s` | Raise `Foundry:Local:TimeoutSeconds`, or use a smaller or GPU model. |
+
+The app finds Foundry Local by running `foundry service status`, because the service picks a new port every time it starts, so `Local.Endpoint` only matters when you use another server such as Ollama (then set `AutoDiscover` to `false`).
+
 ## 🧪 Running Automated Tests
 
 The solution includes 95 automated unit and integration tests covering all six architectural pillars and the benchmark tool. Apart from the one integration test below, none need a model: model calls use scripted fake clients.

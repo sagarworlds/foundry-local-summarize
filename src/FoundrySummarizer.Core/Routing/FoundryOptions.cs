@@ -3,7 +3,8 @@ namespace FoundrySummarizer.Core.Routing;
 public class LocalFoundryConfig
 {
     /// <summary>
-    /// Local Foundry endpoint. Set to "auto" to automatically read the active daemon port from ~/.foundry/daemon.json, or provide an explicit URL (e.g. http://127.0.0.1:63715/v1 or http://localhost:11434/v1 for Ollama).
+    /// Local endpoint used when auto-discovery is off or finds nothing, e.g. http://localhost:11434/v1 for Ollama.
+    /// Foundry Local picks a new port each time its service starts, so for Foundry Local leave AutoDiscover on.
     /// </summary>
     public string Endpoint { get; set; } = "http://127.0.0.1:63715/v1";
 
@@ -13,11 +14,24 @@ public class LocalFoundryConfig
     public string ModelId { get; set; } = "qwen2.5-0.5b-instruct-generic-cpu";
 
     /// <summary>
-    /// If true, automatically queries ~/.foundry/daemon.json for the active Foundry Local URL if Endpoint is "auto" or unreachable.
+    /// If true, finds the running Foundry Local service with <c>foundry service status</c> (as the official SDK does),
+    /// re-discovering whenever the service stops answering; <see cref="Endpoint"/> is used only when that finds nothing.
     /// </summary>
     public bool AutoDiscover { get; set; } = true;
 
-    public int TimeoutSeconds { get; set; } = 15;
+    /// <summary>
+    /// Maximum seconds to wait for one model response. Small models on CPU can take minutes to summarize a
+    /// long document; a request that times out is answered by the offline demo engine instead.
+    /// </summary>
+    public int TimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// When true and discovery finds the Foundry Local service stopped, the app runs <c>foundry service start</c>.
+    /// </summary>
+    public bool AutoStartService { get; set; } = true;
+
+    /// <summary>Maximum seconds to wait for Foundry Local to load a model into memory before first use.</summary>
+    public int ModelLoadTimeoutSeconds { get; set; } = 300;
     public string Provider { get; set; } = "FoundryLocal";
 
     /// <summary>

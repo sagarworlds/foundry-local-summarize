@@ -23,26 +23,34 @@ public class LocalModelCatalog
     /// <param name="baseUri">Any URI on the local service; only scheme and authority are used.</param>
     /// <param name="cancellationToken">Cancels the request.</param>
     /// <returns>Loaded model ids, or an empty list when the endpoint is not Foundry Local or is unreachable.</returns>
-    public async Task<IReadOnlyList<string>> GetLoadedModelIdsAsync(Uri baseUri, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<string>> GetLoadedModelIdsAsync(Uri baseUri, CancellationToken cancellationToken = default) =>
+        await TryGetModelIdsAsync(baseUri, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
+
+    /// <summary>
+    /// Lists models from <paramref name="route"/> (e.g. <c>/openai/loadedmodels</c>, <c>/openai/models</c>, <c>/v1/models</c>).
+    /// </summary>
+    /// <returns>
+    /// The ids, an empty list when the route exists but lists nothing, or null when the route is not served
+    /// (Ollama lacks the Foundry routes) or cannot be read. Null lets callers tell "not Foundry" from "none loaded".
+    /// </returns>
+    public async Task<IReadOnlyList<string>?> TryGetModelIdsAsync(Uri baseUri, string route, CancellationToken cancellationToken = default)
     {
-        var url = $"{baseUri.Scheme}://{baseUri.Authority}/openai/loadedmodels";
+        var url = $"{baseUri.Scheme}://{baseUri.Authority}{route}";
         try
         {
             using var response = await _httpClient.GetAsync(url, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                // Expected on Ollama and other OpenAI-compatible servers that lack this Foundry-specific route.
-                return Array.Empty<string>();
+                return null;
             }
 
-            var json = await response.Content.ReadAsStringAsync(cancellationToken);
-            return ParseModelIds(json);
+            return ParseModelIds(await response.Content.ReadAsStringAsync(cancellationToken));
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
-            // Discovery is an optimisation: on failure the caller falls back to /v1/models or the configured id.
-            System.Diagnostics.Debug.WriteLine($"[LocalModelCatalog] Loaded-model discovery failed at {url}: {ex.Message}");
-            return Array.Empty<string>();
+            // Discovery is an optimisation: on failure the caller falls back to another route or the configured id.
+            System.Diagnostics.Debug.WriteLine($"[LocalModelCatalog] Model listing failed at {url}: {ex.Message}");
+            return null;
         }
     }
 

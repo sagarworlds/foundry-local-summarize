@@ -126,22 +126,23 @@ public partial class MainViewModel : ObservableObject
     {
         _foundryOptions.PrivacyMode = value;
         DaemonStatusText = value
-            ? $"🔒 Privacy Mode: Local ({_foundryOptions.LocalEndpoint}, $0.00)"
+            ? $"🔒 Privacy Mode: Local ({_router.ActiveLocalEndpoint}, $0.00)"
             : $"☁️ Hybrid Mode: Local + Cloud ({_foundryOptions.CloudModelId})";
     }
 
     [RelayCommand]
     public async Task CheckDaemonStatusAsync()
     {
-        bool online = await _router.CheckLocalDaemonStatusAsync();
+        var status = await _router.GetLocalStatusAsync();
         Application.Current?.Dispatcher.Invoke(() =>
         {
-            IsDaemonOnline = online;
+            IsDaemonOnline = status.IsAvailable;
             if (IsPrivacyMode)
             {
-                DaemonStatusText = online
-                    ? $"Foundry Local: Active ({_foundryOptions.LocalEndpoint}, model: {_router.ActiveLocalModelId})"
-                    : $"Foundry Local: Offline Mode Ready ({_foundryOptions.LocalModelId})";
+                // When unreachable, show the reason: summaries would otherwise silently be demo output.
+                DaemonStatusText = status.IsAvailable
+                    ? $"Foundry Local: Active ({status.Endpoint}, model: {status.ModelId})"
+                    : $"⚠️ No local model: {status.Problem}";
             }
             else
             {
