@@ -1,4 +1,5 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using System.Net.Http;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -24,6 +25,7 @@ public sealed class FoundryLocalService : IDisposable
     private readonly IFoundryCli _cli;
     private readonly HttpClient _probeClient;
     private readonly LocalModelCatalog _catalog;
+    private readonly PipelineTransport? _chatTransport;
 
     // Checks run before every request and may run concurrently (summary + chat); one at a time keeps the
     // discovered endpoint, selected model and client consistent.
@@ -37,7 +39,7 @@ public sealed class FoundryLocalService : IDisposable
 
     /// <param name="options">Local endpoint, model and timeout settings.</param>
     /// <param name="cli">Foundry CLI runner; defaults to the real <c>foundry</c> executable.</param>
-    /// <param name="probeHandler">HTTP handler for status and model-management calls (tests pass a stub).</param>
+    /// <param name="probeHandler">HTTP handler for status, model-management and chat calls; tests pass a stub, null uses the network.</param>
     public FoundryLocalService(FoundryOptions options, IFoundryCli? cli = null, HttpMessageHandler? probeHandler = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -46,6 +48,7 @@ public sealed class FoundryLocalService : IDisposable
         // Model loads can take minutes; each call sets its own shorter timeout where appropriate.
         _probeClient.Timeout = Timeout.InfiniteTimeSpan;
         _catalog = new LocalModelCatalog(_probeClient);
+        _chatTransport = probeHandler is null ? null : new HttpClientPipelineTransport(new HttpClient(probeHandler, disposeHandler: false));
         _activeModelId = options.LocalModelId;
     }
 
@@ -256,16 +259,26 @@ public sealed class FoundryLocalService : IDisposable
         if (_client is not null && _clientKey == key) return _client;
 
         _client?.Dispose();
-        var openAi = new OpenAIClient(
-            new ApiKeyCredential("local-foundry-key"),
-            new OpenAIClientOptions
-            {
-                Endpoint = new Uri(serviceBase, "v1"),
-                NetworkTimeout = TimeSpan.FromSeconds(Math.Max(1, _options.Local.TimeoutSeconds))
-            });
-        _client = openAi.GetChatClient(_activeModelId).AsIChatClient();
+        _client = CreateChatClient(new Uri(serviceBase, "v1"), _activeModelId, TimeSpan.FromSeconds(Math.Max(1, _options.Local.TimeoutSeconds)), _chatTransport);
         _clientKey = key;
         return _client;
+    }
+
+    /// <summary>
+    /// Creates an OpenAI-compatible chat client for a local server, with the request fix-ups local servers need
+    /// (see <see cref="MaxTokensCompatibilityPolicy"/>).
+    /// </summary>
+    /// <param name="endpoint">The OpenAI-compatible base address (…/v1).</param>
+    /// <param name="modelId">Model to send requests to.</param>
+    /// <param name="networkTimeout">Maximum wait for one response.</param>
+    /// <param name="transport">HTTP transport; tests pass a fake, null uses the default.</param>
+    public static IChatClient CreateChatClient(Uri endpoint, string modelId, TimeSpan networkTimeout, PipelineTransport? transport = null)
+    {
+        var clientOptions = new OpenAIClientOptions { Endpoint = endpoint, NetworkTimeout = networkTimeout };
+        if (transport is not null) clientOptions.Transport = transport;
+        clientOptions.AddPolicy(new MaxTokensCompatibilityPolicy(), PipelinePosition.PerCall);
+
+        return new OpenAIClient(new ApiKeyCredential("local-foundry-key"), clientOptions).GetChatClient(modelId).AsIChatClient();
     }
 
     private LocalModelStatus Unavailable(string problem) => new(false, Endpoint, _activeModelId, problem, null);

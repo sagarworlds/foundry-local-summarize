@@ -111,8 +111,31 @@ public sealed class FoundryLocalChatClient : IChatClient
             $"Model '{ActiveModelId}' did not answer within {_options.Local.TimeoutSeconds}s. Increase Foundry:Local:TimeoutSeconds in appsettings.json or use a smaller or GPU model.",
         System.ClientModel.ClientResultException { Status: 404 } =>
             $"Foundry Local does not know model '{ActiveModelId}'. Check the name with 'foundry model list' and load it with 'foundry model run <model>'.",
+        System.ClientModel.ClientResultException { Status: 400 } rejected =>
+            $"Model '{ActiveModelId}' rejected the request (HTTP 400){ServerDetail(rejected)}. A document or question too long for the model's context window is the usual cause: " +
+            "lower Foundry:Summarization:MaxSinglePassTokens or Foundry:Chat:MaxPassageTokens, or use a model with a larger context such as phi-4-mini.",
         _ => $"The request to model '{ActiveModelId}' failed: {ex.Message.Split('\n')[0].Trim()}"
     };
+
+    /// <summary>
+    /// The server's own error text. The SDK's message only shows the JSON "message" field, which Foundry Local
+    /// often leaves empty, so the raw body is the only place the actual reason appears.
+    /// </summary>
+    private static string ServerDetail(System.ClientModel.ClientResultException ex)
+    {
+        string body;
+        try
+        {
+            body = ex.GetRawResponse()?.Content?.ToString()?.Trim() ?? string.Empty;
+        }
+        catch (InvalidOperationException)
+        {
+            body = string.Empty; // the response body was not buffered
+        }
+
+        if (body.Length == 0) return string.Empty;
+        return $": {(body.Length <= 300 ? body : body[..300] + "…")}";
+    }
 
     /// <inheritdoc />
     public object? GetService(Type serviceType, object? serviceKey = null) =>

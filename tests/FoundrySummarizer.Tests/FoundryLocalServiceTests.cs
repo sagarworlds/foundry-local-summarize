@@ -36,15 +36,18 @@ public class FoundryLocalServiceTests
         private readonly HashSet<string> _liveAuthorities;
         private readonly Func<string, HttpResponseMessage> _respond;
 
-        public FakeServer(IEnumerable<string> liveAuthorities, Func<string, HttpResponseMessage> respond)
+        private readonly List<string>? _bodies;
+
+        public FakeServer(IEnumerable<string> liveAuthorities, Func<string, HttpResponseMessage> respond, List<string>? bodies = null)
         {
             _liveAuthorities = liveAuthorities.ToHashSet();
             _respond = respond;
+            _bodies = bodies;
         }
 
         public List<string> Requests { get; } = new();
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
             if (!_liveAuthorities.Contains(uri.Authority))
@@ -53,7 +56,11 @@ public class FoundryLocalServiceTests
             }
 
             Requests.Add(uri.PathAndQuery);
-            return Task.FromResult(_respond(uri.PathAndQuery));
+            if (request.Content is not null)
+            {
+                _bodies?.Add(await request.Content.ReadAsStringAsync(cancellationToken));
+            }
+            return _respond(uri.PathAndQuery);
         }
 
         public static HttpResponseMessage Json(string json) =>
@@ -223,19 +230,84 @@ public class FoundryLocalServiceTests
         Assert.Contains("'foundry' command was not found", ex.Message);
     }
 
+    /// <summary>A Foundry Local fake with phi-4-mini loaded, whose chat endpoint answers with <paramref name="chat"/>.</summary>
+    private static FakeServer FoundryWithChat(Func<string, HttpResponseMessage> chat, List<string>? chatBodies = null) =>
+        new(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            "/openai/loadedmodels" => FakeServer.Json("""["phi-4-mini-instruct-generic-gpu"]"""),
+            "/v1/chat/completions" => chat(path),
+            _ => FakeServer.Json("{}")
+        }, chatBodies);
+
+    private const string CompletionJson = """
+        {"id":"c1","object":"chat.completion","created":1,"model":"phi-4-mini-instruct-generic-gpu",
+         "choices":[{"index":0,"message":{"role":"assistant","content":"SUMMARY"},"finish_reason":"stop"}]}
+        """;
+
     [Fact]
-    public async Task ChatClient_ExplainsAFailedRequest()
+    public async Task ChatClient_SendsMaxTokensThatFoundryLocalAccepts()
     {
-        // Model management (faked) says the model is ready, but the chat request itself goes over real HTTP
-        // to a closed port, so it fails in transport like a crashed or restarting service would.
-        var options = Options(o => { o.AutoDiscover = false; o.Endpoint = "http://127.0.0.1:9/v1"; });
-        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.NotInstalled(),
-            new FakeServer(new[] { "127.0.0.1:9" }, _ => FakeServer.Json("[]"))));
+        // Foundry Local answers HTTP 400 to "max_completion_tokens", which the OpenAI SDK sends by default.
+        var bodies = new List<string>();
+        var server = FoundryWithChat(_ => FakeServer.Json(CompletionJson), bodies);
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
+
+        var response = await client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Summarize.") }, new ChatOptions { MaxOutputTokens = 1500 });
+
+        Assert.Equal("SUMMARY", response.Text);
+        var body = Assert.Single(bodies);
+        Assert.Contains("\"max_tokens\":1500", body);
+        Assert.DoesNotContain("max_completion_tokens", body);
+    }
+
+    [Fact]
+    public async Task ChatClient_ShowsTheServersReasonForARejectedRequest()
+    {
+        var server = FoundryWithChat(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("""{"error":{"type":"invalid_request_error","message":""},"detail":"prompt exceeds max length"}""")
+        });
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
 
         var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
             client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "hello") }));
 
-        Assert.StartsWith($"The request to model '{client.ActiveModelId}' failed:", ex.Message);
+        Assert.Contains("rejected the request (HTTP 400)", ex.Message);
+        Assert.Contains("prompt exceeds max length", ex.Message);
+        Assert.Contains("MaxSinglePassTokens", ex.Message);
+    }
+
+    [Fact]
+    public async Task ChatClient_ExplainsAFailedRequest()
+    {
+        // The service answers model management, then the connection drops during the chat request.
+        var server = FoundryWithChat(_ => throw new HttpRequestException("Connection reset"));
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
+
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
+            client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "hello") }));
+
+        Assert.StartsWith("The request to model 'phi-4-mini-instruct-generic-gpu' failed:", ex.Message);
         Assert.NotNull(ex.InnerException);
+    }
+
+    [Theory]
+    [InlineData("""{"model":"m","max_completion_tokens":50}""", """{"model":"m","max_tokens":50}""")]
+    [InlineData("""{"model":"m","max_tokens":10,"max_completion_tokens":50}""", """{"model":"m","max_tokens":10}""")]
+    public void Policy_RenamesMaxCompletionTokens(string input, string expected)
+    {
+        var output = MaxTokensCompatibilityPolicy.RewriteBody(System.Text.Encoding.UTF8.GetBytes(input));
+        Assert.Equal(expected, System.Text.Encoding.UTF8.GetString(output!));
+    }
+
+    [Theory]
+    [InlineData("""{"model":"m"}""")]
+    [InlineData("not json")]
+    public void Policy_LeavesOtherBodiesUntouched(string input)
+    {
+        Assert.Null(MaxTokensCompatibilityPolicy.RewriteBody(System.Text.Encoding.UTF8.GetBytes(input)));
     }
 }
