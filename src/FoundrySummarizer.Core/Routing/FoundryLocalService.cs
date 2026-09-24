@@ -47,6 +47,10 @@ public sealed class FoundryLocalService : IDisposable
     private string? _clientKey;
     private string? _userSelectedModelId;
 
+    // Foundry Local's catalog (/foundry/list), fetched once per service address; null for servers without it.
+    private FoundryCatalog? _foundryCatalog;
+    private Uri? _foundryCatalogBase;
+
     // Speech, embedding and image models share the listing but cannot answer chat requests.
     private static readonly string[] NonChatMarkers = { "whisper", "embed", "tts", "vision-encoder" };
 
@@ -102,8 +106,13 @@ public sealed class FoundryLocalService : IDisposable
 
             var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
             var downloaded = await ListDownloadedAsync(serviceBase, cancellationToken);
-            // Listed once each even when the two endpoints spell the id with and without a version suffix.
+            // Re-read the catalog so a model downloaded since the last refresh resolves too.
+            var catalog = await GetFoundryCatalogAsync(serviceBase, refresh: true, cancellationToken);
+
+            // Shown by their catalog id (the only form the load route accepts), once each even when the two
+            // endpoints spell the id with and without a version suffix.
             var models = downloaded.Concat(loaded)
+                .Select(id => ResolveId(catalog, id))
                 .Where(IsChatModel)
                 .DistinctBy(StripVersion, StringComparer.OrdinalIgnoreCase)
                 .Select(id => new LocalModelInfo(id, loaded.Any(l => SameModel(l, id))))
@@ -133,9 +142,10 @@ public sealed class FoundryLocalService : IDisposable
         {
             if (_serviceBase is null) return null;
 
+            modelId = ResolveId(await GetFoundryCatalogAsync(_serviceBase, refresh: false, cancellationToken), modelId);
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(60));
-            var url = new Uri(_serviceBase, $"openai/unload/{Uri.EscapeDataString(modelId)}?force=true");
+            var url = new Uri(_serviceBase, $"openai/unload/{PathSegment(modelId)}?force=true");
             try
             {
                 using var response = await _probeClient.GetAsync(url, cts.Token);
@@ -226,6 +236,11 @@ public sealed class FoundryLocalService : IDisposable
             var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
             bool isFoundry = loaded is not null;
             await SelectModelAsync(serviceBase, loaded, cancellationToken);
+            if (isFoundry)
+            {
+                // Requests must name the model exactly as the catalog does ("…-gpu:5"), or Foundry Local rejects them.
+                _activeModelId = ResolveId(await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken), _activeModelId);
+            }
 
             // Checked against the service on every call (never cached): Foundry Local unloads idle models after
             // their time-to-live, so a model loaded earlier in the session may be gone now.
@@ -247,14 +262,29 @@ public sealed class FoundryLocalService : IDisposable
     }
 
     /// <summary>
-    /// Asks Foundry Local to load <paramref name="modelId"/> into memory (<c>/openai/load/{model}</c>).
+    /// Asks Foundry Local to load <paramref name="modelId"/> into memory, the way Microsoft's Foundry Local SDK does:
+    /// <c>/openai/load/{catalog id}?timeout=…</c>, adding <c>ep=cuda</c> for generic-GPU builds on CUDA machines.
     /// </summary>
     /// <returns>Null on success; otherwise what went wrong and how to fix it.</returns>
     public async Task<string?> LoadModelAsync(Uri serviceBase, string modelId, CancellationToken cancellationToken = default)
     {
+        var catalog = await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken);
+        var entry = catalog?.Resolve(modelId);
+        if (catalog is { Count: > 0 } && entry is null)
+        {
+            return $"Foundry Local's catalog has no model named '{modelId}'. Pick another model, or check the name with 'foundry model list'.";
+        }
+
+        var loadId = entry?.Id ?? modelId;
+        var query = $"timeout={Math.Max(1, _options.Local.ModelLoadTimeoutSeconds)}";
+        if (entry is not null && catalog!.ExecutionProviderOverride(entry) is { } ep)
+        {
+            query += $"&ep={ep}";
+        }
+
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.Local.ModelLoadTimeoutSeconds)));
-        var url = new Uri(serviceBase, $"openai/load/{Uri.EscapeDataString(modelId)}");
+        var url = new Uri(serviceBase, $"openai/load/{PathSegment(loadId)}?{query}");
         try
         {
             using var response = await _probeClient.GetAsync(url, cts.Token);
@@ -264,18 +294,52 @@ public sealed class FoundryLocalService : IDisposable
             }
 
             var body = (await response.Content.ReadAsStringAsync(cts.Token)).Trim();
-            return $"Foundry Local could not load model '{modelId}' (HTTP {(int)response.StatusCode}{(body.Length > 0 ? $": {Truncate(body)}" : "")}). " +
-                   $"Check the name with 'foundry model list' and download it with 'foundry model download {modelId}'.";
+            return $"Foundry Local could not load model '{loadId}' (HTTP {(int)response.StatusCode}{(body.Length > 0 ? $": {Truncate(body)}" : "")}). " +
+                   $"Check that it is downloaded with 'foundry cache list', or download it with 'foundry model download {loadId}'.";
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return $"Model '{modelId}' did not finish loading within {_options.Local.ModelLoadTimeoutSeconds}s. Load it first with 'foundry model run {modelId}'.";
+            return $"Model '{loadId}' did not finish loading within {_options.Local.ModelLoadTimeoutSeconds}s. Load it first with 'foundry model run {loadId}'.";
         }
         catch (HttpRequestException ex)
         {
-            return $"Loading model '{modelId}' failed: {ex.Message}";
+            return $"Loading model '{loadId}' failed: {ex.Message}";
         }
     }
+
+    /// <summary>Returns Foundry Local's catalog, fetching it when missing, stale (new address) or <paramref name="refresh"/> is set.</summary>
+    /// <returns>The catalog, or null when the server has none (e.g. Ollama) or it cannot be read.</returns>
+    private async Task<FoundryCatalog?> GetFoundryCatalogAsync(Uri serviceBase, bool refresh, CancellationToken cancellationToken)
+    {
+        if (!refresh && _foundryCatalog is not null && _foundryCatalogBase == serviceBase)
+        {
+            return _foundryCatalog;
+        }
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            using var response = await _probeClient.GetAsync(new Uri(serviceBase, "foundry/list"), cts.Token);
+            if (!response.IsSuccessStatusCode) return null;
+
+            _foundryCatalog = FoundryCatalog.Parse(await response.Content.ReadAsStringAsync(cts.Token));
+            _foundryCatalogBase = serviceBase;
+            return _foundryCatalog;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or System.Text.Json.JsonException
+                                   || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            // Without the catalog, ids are used as listed; a wrong one then fails with the service's own message.
+            System.Diagnostics.Debug.WriteLine($"[FoundryLocalService] Could not read the model catalog at {serviceBase}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string ResolveId(FoundryCatalog? catalog, string id) => catalog?.Resolve(id)?.Id ?? id;
+
+    /// <summary>Escapes a model id for a URL path but keeps ':' readable, as the official SDK sends it.</summary>
+    private static string PathSegment(string id) => Uri.EscapeDataString(id).Replace("%3A", ":", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Finds the service base address and confirms something answers there. With auto-discovery, a failed probe

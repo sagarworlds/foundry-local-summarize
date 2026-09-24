@@ -147,7 +147,7 @@ public class FoundryLocalServiceTests
         var status = await service.CheckAsync(ensureModelLoaded: true);
 
         Assert.False(status.IsAvailable);
-        Assert.Contains("/openai/load/qwen2.5-0.5b-instruct-generic-cpu", server.Requests);
+        Assert.Contains(server.Requests, r => r.StartsWith("/openai/load/qwen2.5-0.5b-instruct-generic-cpu?timeout="));
         Assert.Contains("could not load model 'qwen2.5-0.5b-instruct-generic-cpu' (HTTP 404: model not found in cache)", status.Problem);
         Assert.Contains("foundry model download", status.Problem);
     }
@@ -287,6 +287,85 @@ public class FoundryLocalServiceTests
         await service.CheckAsync(ensureModelLoaded: false);
 
         Assert.Null(await service.UnloadModelAsync("llama3.2:3b"));
+    }
+
+    private const string CatalogJson = """
+        [
+          {"name":"Phi-4-mini-instruct-cuda-gpu:4","alias":"phi-4-mini","runtime":{"deviceType":"GPU","executionProvider":"CUDAExecutionProvider"}},
+          {"name":"Phi-4-mini-instruct-generic-gpu:4","alias":"phi-4-mini","runtime":{"deviceType":"GPU","executionProvider":"WebGpuExecutionProvider"}},
+          {"name":"Phi-4-mini-instruct-generic-gpu:5","alias":"phi-4-mini","runtime":{"deviceType":"GPU","executionProvider":"WebGpuExecutionProvider"}},
+          {"name":"qwen3-0.6b-generic-gpu:1","alias":"qwen3-0.6b","runtime":{"deviceType":"GPU","executionProvider":"WebGpuExecutionProvider"}},
+          {"name":"qwen2.5-0.5b-instruct-generic-cpu:3","alias":"qwen2.5-0.5b","runtime":{"deviceType":"CPU","executionProvider":"CPUExecutionProvider"}}
+        ]
+        """;
+
+    /// <summary>
+    /// The reported machine: /openai/models lists ids without their version, and /openai/load answers 404 unless it
+    /// gets the exact catalog id, e.g. "Phi-4-mini-instruct-generic-gpu:5".
+    /// </summary>
+    private static FakeServer FoundryWithCatalog(HashSet<string> loaded, List<string>? chatBodies = null) =>
+        new(new[] { "127.0.0.1:5273" }, path =>
+        {
+            var route = path.Split('?')[0];
+            var model = Uri.UnescapeDataString(route.Split('/').Last());
+            if (route == "/foundry/list") return FakeServer.Json(CatalogJson);
+            if (route == "/openai/models") return FakeServer.Json("""["Phi-4-mini-instruct-generic-gpu","qwen3-0.6b-generic-gpu"]""");
+            if (route == "/openai/loadedmodels") return FakeServer.Json(System.Text.Json.JsonSerializer.Serialize(loaded));
+            if (route.StartsWith("/openai/load/"))
+            {
+                if (!model.Contains(':')) return FakeServer.NotFound();
+                loaded.Add(model);
+                return FakeServer.Json("{}");
+            }
+            if (route.StartsWith("/openai/unload/")) { loaded.Remove(model); return FakeServer.Json("{}"); }
+            if (route == "/v1/chat/completions") return FakeServer.Json(CompletionJson);
+            return FakeServer.Json("{}");
+        }, chatBodies);
+
+    [Fact]
+    public void Catalog_ResolvesLikeTheOfficialSdk()
+    {
+        var catalog = FoundryCatalog.Parse(CatalogJson);
+
+        Assert.Equal("Phi-4-mini-instruct-generic-gpu:5", catalog.Resolve("Phi-4-mini-instruct-generic-gpu")?.Id);   // newest version
+        Assert.Equal("Phi-4-mini-instruct-generic-gpu:4", catalog.Resolve("phi-4-mini-instruct-generic-gpu:4")?.Id);  // exact
+        Assert.Equal("Phi-4-mini-instruct-cuda-gpu:4", catalog.Resolve("phi-4-mini")?.Id);                            // alias, best device first
+        Assert.Null(catalog.Resolve("no-such-model"));
+        Assert.Equal("cuda", catalog.ExecutionProviderOverride(catalog.Resolve("Phi-4-mini-instruct-generic-gpu")!));
+        Assert.Null(catalog.ExecutionProviderOverride(catalog.Resolve("qwen2.5-0.5b-instruct-generic-cpu")!));
+    }
+
+    [Fact]
+    public async Task Loads_TheCatalogIdEvenWhenTheModelListOmitsTheVersion()
+    {
+        var loaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var bodies = new List<string>();
+        var server = FoundryWithCatalog(loaded, bodies);
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
+
+        var list = await client.ListModelsAsync();
+        Assert.Contains(list.Models, m => m.Id == "Phi-4-mini-instruct-generic-gpu:5");
+
+        var result = await client.SwitchModelAsync("Phi-4-mini-instruct-generic-gpu");
+        Assert.True(result.Status.IsAvailable, result.Status.Problem);
+        Assert.Contains(server.Requests, r => r.StartsWith("/openai/load/Phi-4-mini-instruct-generic-gpu:5?timeout=") && r.EndsWith("&ep=cuda"));
+
+        await client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Summarize.") });
+        Assert.Contains("\"model\":\"Phi-4-mini-instruct-generic-gpu:5\"", Assert.Single(bodies));
+    }
+
+    [Fact]
+    public async Task Load_ExplainsANameTheCatalogDoesNotKnow()
+    {
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus),
+            FoundryWithCatalog(new HashSet<string>())));
+
+        var result = await client.SwitchModelAsync("no-such-model");
+
+        Assert.False(result.Status.IsAvailable);
+        Assert.Contains("catalog has no model named 'no-such-model'", result.Status.Problem);
     }
 
     [Theory]
