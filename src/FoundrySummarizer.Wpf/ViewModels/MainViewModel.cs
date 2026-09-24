@@ -109,7 +109,7 @@ public partial class MainViewModel : ObservableObject
 
             // A remembered model that has since been deleted from the cache would fail on every request.
             var chosen = _modelClient.UserSelectedModelId;
-            if (chosen is not null && !list.Models.Any(m => string.Equals(m.Id, chosen, StringComparison.OrdinalIgnoreCase)))
+            if (chosen is not null && !list.Models.Any(m => FoundryLocalService.SameModel(m.Id, chosen)))
             {
                 _modelClient.SelectModel(null);
                 RememberModel(null);
@@ -147,7 +147,7 @@ public partial class MainViewModel : ObservableObject
             if (status.IsAvailable)
             {
                 // Mark it as loaded without re-listing: the load just confirmed it.
-                ShowModels(AvailableModels.Select(m => m.Id == modelId ? m with { IsLoaded = true } : m).ToList(), modelId);
+                ShowModels(AvailableModels.Select(m => FoundryLocalService.SameModel(m.Id, modelId) ? m with { IsLoaded = true } : m).ToList(), modelId);
             }
         }
         finally
@@ -164,7 +164,7 @@ public partial class MainViewModel : ObservableObject
             AvailableModels.Clear();
             foreach (var model in models) AvailableModels.Add(model);
 
-            SelectedModel = AvailableModels.FirstOrDefault(m => string.Equals(m.Id, selectedId, StringComparison.OrdinalIgnoreCase));
+            SelectedModel = AvailableModels.FirstOrDefault(m => selectedId is not null && FoundryLocalService.SameModel(m.Id, selectedId));
             if (SelectedModel is null && selectedId is not null)
             {
                 // The configured fallback model may not be in the downloaded list; still show what will be used.

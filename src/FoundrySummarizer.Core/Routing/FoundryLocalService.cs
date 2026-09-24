@@ -40,7 +40,6 @@ public sealed class FoundryLocalService : IDisposable
     // Checks run before every request and may run concurrently (summary + chat); one at a time keeps the
     // discovered endpoint, selected model and client consistent.
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly HashSet<string> _confirmedLoaded = new(StringComparer.OrdinalIgnoreCase);
 
     private Uri? _serviceBase;
     private string _activeModelId;
@@ -103,12 +102,11 @@ public sealed class FoundryLocalService : IDisposable
 
             var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
             var downloaded = await ListDownloadedAsync(serviceBase, cancellationToken);
-            var loadedSet = loaded.ToHashSet(StringComparer.OrdinalIgnoreCase);
-
+            // Listed once each even when the two endpoints spell the id with and without a version suffix.
             var models = downloaded.Concat(loaded)
                 .Where(IsChatModel)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Select(id => new LocalModelInfo(id, loadedSet.Contains(id)))
+                .DistinctBy(StripVersion, StringComparer.OrdinalIgnoreCase)
+                .Select(id => new LocalModelInfo(id, loaded.Any(l => SameModel(l, id))))
                 .OrderByDescending(m => m.IsLoaded)
                 .ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -121,6 +119,42 @@ public sealed class FoundryLocalService : IDisposable
         {
             _gate.Release();
         }
+    }
+
+    /// <summary>
+    /// Loads the active model again, e.g. after the service answered "model is not loaded" because it unloaded
+    /// the model after its idle time-to-live.
+    /// </summary>
+    /// <returns>Null on success; otherwise what went wrong and how to fix it.</returns>
+    public async Task<string?> ReloadActiveModelAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            return _serviceBase is null
+                ? "The local model service has not been found yet."
+                : await LoadModelAsync(_serviceBase, _activeModelId, cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// True when two ids name the same model. Foundry Local reports some ids with a catalog version suffix
+    /// ("Phi-4-mini-instruct-generic-gpu:5") and others without, depending on the endpoint. Only an all-digit
+    /// suffix is ignored, so Ollama tags such as "llama3.2:3b" still have to match exactly.
+    /// </summary>
+    public static bool SameModel(string a, string b) =>
+        string.Equals(StripVersion(a), StripVersion(b), StringComparison.OrdinalIgnoreCase);
+
+    private static string StripVersion(string id)
+    {
+        int colon = id.LastIndexOf(':');
+        return colon > 0 && colon < id.Length - 1 && id.AsSpan(colon + 1).IndexOfAnyExceptInRange('0', '9') < 0
+            ? id[..colon]
+            : id;
     }
 
     private static bool IsChatModel(string id) =>
@@ -155,8 +189,9 @@ public sealed class FoundryLocalService : IDisposable
             bool isFoundry = loaded is not null;
             await SelectModelAsync(serviceBase, loaded, cancellationToken);
 
-            if (ensureModelLoaded && isFoundry && !loaded!.Contains(_activeModelId, StringComparer.OrdinalIgnoreCase)
-                && !_confirmedLoaded.Contains(_activeModelId))
+            // Checked against the service on every call (never cached): Foundry Local unloads idle models after
+            // their time-to-live, so a model loaded earlier in the session may be gone now.
+            if (ensureModelLoaded && isFoundry && !loaded!.Any(id => SameModel(id, _activeModelId)))
             {
                 var loadProblem = await LoadModelAsync(serviceBase, _activeModelId, cancellationToken);
                 if (loadProblem is not null)
@@ -187,7 +222,6 @@ public sealed class FoundryLocalService : IDisposable
             using var response = await _probeClient.GetAsync(url, cts.Token);
             if (response.IsSuccessStatusCode)
             {
-                _confirmedLoaded.Add(modelId);
                 return null;
             }
 

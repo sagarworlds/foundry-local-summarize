@@ -67,10 +67,28 @@ public sealed class FoundryLocalChatClient : IChatClient
     /// <exception cref="LocalModelUnavailableException">No local model could answer; the message says why.</exception>
     public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
+        var messageList = messages as IList<ChatMessage> ?? messages.ToList();   // may be sent twice
         var client = await GetReadyClientAsync(cancellationToken);
         try
         {
-            return await client.GetResponseAsync(messages, options, cancellationToken);
+            return await client.GetResponseAsync(messageList, options, cancellationToken);
+        }
+        catch (System.ClientModel.ClientResultException ex) when (IsModelNotLoaded(ex))
+        {
+            // The model was unloaded between the check and the request (idle time-to-live): load it and retry once.
+            if (await _localService.ReloadActiveModelAsync(cancellationToken) is { } loadProblem)
+            {
+                throw new LocalModelUnavailableException(loadProblem, ex);
+            }
+        }
+        catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
+        {
+            throw new LocalModelUnavailableException(DescribeRequestFailure(ex), ex);
+        }
+
+        try
+        {
+            return await client.GetResponseAsync(messageList, options, cancellationToken);
         }
         catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
         {
@@ -125,30 +143,47 @@ public sealed class FoundryLocalChatClient : IChatClient
             $"Model '{ActiveModelId}' did not answer within {_options.Local.TimeoutSeconds}s. Increase Foundry:Local:TimeoutSeconds in appsettings.json or use a smaller or GPU model.",
         System.ClientModel.ClientResultException { Status: 404 } =>
             $"Foundry Local does not know model '{ActiveModelId}'. Check the name with 'foundry model list' and load it with 'foundry model run <model>'.",
+        System.ClientModel.ClientResultException { Status: 400 } rejected when IsModelNotLoaded(rejected) =>
+            $"Foundry Local could not keep model '{ActiveModelId}' loaded. Load it with 'foundry model run {ActiveModelId}' and try again.",
+        System.ClientModel.ClientResultException { Status: 400 } rejected when MentionsContextLength(rejected) =>
+            $"The text is too long for model '{ActiveModelId}'{ServerDetail(rejected)}. Lower Foundry:Summarization:MaxSinglePassTokens " +
+            "or Foundry:Chat:MaxPassageTokens in appsettings.json, or choose a model with a larger context window.",
         System.ClientModel.ClientResultException { Status: 400 } rejected =>
-            $"Model '{ActiveModelId}' rejected the request (HTTP 400){ServerDetail(rejected)}. A document or question too long for the model's context window is the usual cause: " +
-            "lower Foundry:Summarization:MaxSinglePassTokens or Foundry:Chat:MaxPassageTokens, or use a model with a larger context such as phi-4-mini.",
+            $"Model '{ActiveModelId}' rejected the request (HTTP 400){ServerDetail(rejected)}",
         _ => $"The request to model '{ActiveModelId}' failed: {ex.Message.Split('\n')[0].Trim()}"
     };
 
+    private static bool IsModelNotLoaded(System.ClientModel.ClientResultException ex) =>
+        ex.Status == 400 && RawBody(ex).Contains("not loaded", StringComparison.OrdinalIgnoreCase);
+
+    private static bool MentionsContextLength(System.ClientModel.ClientResultException ex)
+    {
+        var body = RawBody(ex);
+        return new[] { "context", "max length", "max_length", "too long", "exceeds" }
+            .Any(term => body.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
+
     /// <summary>
-    /// The server's own error text. The SDK's message only shows the JSON "message" field, which Foundry Local
-    /// often leaves empty, so the raw body is the only place the actual reason appears.
+    /// The server's own error text, shortened. The SDK's message only shows the JSON "message" field, which
+    /// Foundry Local sometimes leaves empty, so the raw body is the only place the actual reason appears.
     /// </summary>
     private static string ServerDetail(System.ClientModel.ClientResultException ex)
     {
-        string body;
+        var body = RawBody(ex);
+        if (body.Length == 0) return string.Empty;
+        return $": {(body.Length <= 300 ? body : body[..300] + "…")}";
+    }
+
+    private static string RawBody(System.ClientModel.ClientResultException ex)
+    {
         try
         {
-            body = ex.GetRawResponse()?.Content?.ToString()?.Trim() ?? string.Empty;
+            return ex.GetRawResponse()?.Content?.ToString()?.Trim() ?? string.Empty;
         }
         catch (InvalidOperationException)
         {
-            body = string.Empty; // the response body was not buffered
+            return string.Empty; // the response body was not buffered
         }
-
-        if (body.Length == 0) return string.Empty;
-        return $": {(body.Length <= 300 ? body : body[..300] + "…")}";
     }
 
     /// <inheritdoc />

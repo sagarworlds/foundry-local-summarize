@@ -152,21 +152,92 @@ public class FoundryLocalServiceTests
         Assert.Contains("foundry model download", status.Problem);
     }
 
-    [Fact]
-    public async Task Loads_ModelOnce()
+    /// <summary>A Foundry Local fake that tracks which models are in memory; <c>unload</c> simulates the idle time-to-live.</summary>
+    private sealed class StatefulFoundry
     {
-        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
+        public HashSet<string> Loaded { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public int LoadCalls { get; private set; }
+        public int ChatCalls { get; private set; }
+        public Action? OnChat { get; set; }
+
+        public FakeServer Server => new(new[] { "127.0.0.1:5273" }, path =>
         {
-            "/openai/loadedmodels" => FakeServer.Json("[]"),
-            _ when path.StartsWith("/openai/load/") => FakeServer.Json("{}"),
-            _ => FakeServer.Json("[]")
+            if (path == "/openai/loadedmodels") return FakeServer.Json(System.Text.Json.JsonSerializer.Serialize(Loaded));
+            if (path == "/openai/models") return FakeServer.Json("""["Phi-4-mini-instruct-generic-gpu:5"]""");
+            if (path.StartsWith("/openai/load/"))
+            {
+                LoadCalls++;
+                Loaded.Add(Uri.UnescapeDataString(path["/openai/load/".Length..].Split('?')[0]));
+                return FakeServer.Json("{}");
+            }
+            if (path == "/v1/chat/completions")
+            {
+                ChatCalls++;
+                OnChat?.Invoke();
+                return Loaded.Count > 0
+                    ? FakeServer.Json(CompletionJson)
+                    : new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(
+                        """{"error":{"message":"Failed to handle OpenAI completion: Model 'Phi-4-mini-instruct-generic-gpu' is not loaded. Please load the model before getting a ChatClient.","type":"invalid_request_error","code":null}}""") };
+            }
+            return FakeServer.Json("{}");
         });
-        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+    }
+
+    [Fact]
+    public async Task Loads_ModelOnlyWhenTheServiceSaysItIsNotLoaded()
+    {
+        var foundry = new StatefulFoundry();
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), foundry.Server);
 
         Assert.True((await service.CheckAsync(ensureModelLoaded: true)).IsAvailable);
         Assert.True((await service.CheckAsync(ensureModelLoaded: true)).IsAvailable);
+        Assert.Equal(1, foundry.LoadCalls);
 
-        Assert.Single(server.Requests, r => r.StartsWith("/openai/load/"));
+        foundry.Loaded.Clear(); // Foundry Local unloaded it after its idle time-to-live
+        Assert.True((await service.CheckAsync(ensureModelLoaded: true)).IsAvailable);
+        Assert.Equal(2, foundry.LoadCalls);
+    }
+
+    [Fact]
+    public async Task ChatClient_ReloadsAndRetriesWhenTheModelWasUnloaded()
+    {
+        var foundry = new StatefulFoundry();
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), foundry.Server));
+        // Unloaded between the pre-request check and the request itself.
+        foundry.OnChat = () => { if (foundry.ChatCalls == 1) foundry.Loaded.Clear(); };
+
+        var response = await client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Summarize.") });
+
+        Assert.Equal("SUMMARY", response.Text);
+        Assert.Equal(2, foundry.ChatCalls);
+        Assert.Equal(2, foundry.LoadCalls);
+    }
+
+    [Fact]
+    public async Task ChatClient_ExplainsAModelThatWillNotStayLoaded()
+    {
+        var foundry = new StatefulFoundry();
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), foundry.Server));
+        foundry.OnChat = () => foundry.Loaded.Clear();
+
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
+            client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Summarize.") }));
+
+        Assert.Contains("could not keep model 'Phi-4-mini-instruct-generic-gpu:5' loaded", ex.Message);
+        Assert.DoesNotContain("context", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("Phi-4-mini-instruct-generic-gpu:5", "Phi-4-mini-instruct-generic-gpu", true)]
+    [InlineData("phi-4-mini-instruct-generic-gpu", "Phi-4-mini-instruct-generic-gpu:12", true)]
+    [InlineData("llama3.2:3b", "llama3.2", false)]
+    [InlineData("llama3.2:3b", "llama3.2:1b", false)]
+    [InlineData("qwen2.5-0.5b-instruct-generic-cpu", "Phi-4-mini-instruct-generic-gpu", false)]
+    public void SameModel_IgnoresOnlyNumericVersionSuffixes(string a, string b, bool expected)
+    {
+        Assert.Equal(expected, FoundryLocalService.SameModel(a, b));
     }
 
     [Fact]
@@ -262,7 +333,7 @@ public class FoundryLocalServiceTests
     }
 
     [Fact]
-    public async Task ChatClient_ShowsTheServersReasonForARejectedRequest()
+    public async Task ChatClient_ExplainsATextTooLongForTheModel()
     {
         var server = FoundryWithChat(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
         {
@@ -274,9 +345,27 @@ public class FoundryLocalServiceTests
         var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
             client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "hello") }));
 
-        Assert.Contains("rejected the request (HTTP 400)", ex.Message);
+        Assert.Contains("The text is too long for model", ex.Message);
         Assert.Contains("prompt exceeds max length", ex.Message);
         Assert.Contains("MaxSinglePassTokens", ex.Message);
+    }
+
+    [Fact]
+    public async Task ChatClient_ShowsOtherRejectionsWithoutGuessingTheCause()
+    {
+        var server = FoundryWithChat(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("""{"error":{"type":"invalid_request_error","message":"unsupported parameter: foo"}}""")
+        });
+        var options = Options();
+        using var client = new FoundryLocalChatClient(options, new FoundryLocalService(options, FakeCli.Always(RunningStatus), server));
+
+        var ex = await Assert.ThrowsAsync<LocalModelUnavailableException>(() =>
+            client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "hello") }));
+
+        Assert.Contains("rejected the request (HTTP 400)", ex.Message);
+        Assert.Contains("unsupported parameter: foo", ex.Message);
+        Assert.DoesNotContain("MaxSinglePassTokens", ex.Message);
     }
 
     [Fact]
