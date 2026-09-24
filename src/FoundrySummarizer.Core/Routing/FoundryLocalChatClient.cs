@@ -101,7 +101,7 @@ public sealed class FoundryLocalChatClient : IChatClient
         var client = await GetReadyClientAsync(cancellationToken);
         try
         {
-            return await client.GetResponseAsync(messageList, options, cancellationToken);
+            return await SendAsync(client, messageList, options, cancellationToken);
         }
         catch (System.ClientModel.ClientResultException ex) when (IsModelNotLoaded(ex))
         {
@@ -118,7 +118,7 @@ public sealed class FoundryLocalChatClient : IChatClient
 
         try
         {
-            return await client.GetResponseAsync(messageList, options, cancellationToken);
+            return await SendAsync(client, messageList, options, cancellationToken);
         }
         catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
         {
@@ -126,7 +126,34 @@ public sealed class FoundryLocalChatClient : IChatClient
         }
     }
 
+    /// <summary>
+    /// Sends one request and returns only the answer: reasoning models are asked not to think where they support
+    /// it, and any <c>&lt;think&gt;</c> reasoning they still write is removed (see <see cref="ReasoningOutputFilter"/>).
+    /// </summary>
+    /// <exception cref="LocalModelUnavailableException">The model produced reasoning but no answer.</exception>
+    private async Task<ChatResponse> SendAsync(IChatClient client, IList<ChatMessage> messages, ChatOptions? options, CancellationToken cancellationToken)
+    {
+        var response = await client.GetResponseAsync(ReasoningOutputFilter.SuppressThinking(ActiveModelId, messages), options, cancellationToken);
+
+        var answer = ReasoningOutputFilter.RemoveReasoning(response.Text ?? string.Empty, out bool hadReasoning);
+        if (!hadReasoning) return response;
+
+        if (answer.Length == 0)
+        {
+            throw new LocalModelUnavailableException(
+                $"Model '{ActiveModelId}' spent its whole answer on reasoning (<think>…</think>) and gave no answer. " +
+                "Choose a model without built-in reasoning, such as phi-4-mini, from the Model list.");
+        }
+
+        response.Messages = new List<ChatMessage> { new(ChatRole.Assistant, answer) };
+        return response;
+    }
+
     /// <inheritdoc />
+    /// <remarks>
+    /// Streams the raw output: unlike <see cref="GetResponseAsync"/>, reasoning (<c>&lt;think&gt;</c>) is not removed,
+    /// because the app does not stream. Use <see cref="GetResponseAsync"/> for user-facing text.
+    /// </remarks>
     /// <exception cref="LocalModelUnavailableException">No local model could answer; the message says why.</exception>
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
         IEnumerable<ChatMessage> messages,
