@@ -65,6 +65,7 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
 
         _modelClient.SelectModel(_settingsStore.Load().SelectedModelId);
         _ = RefreshModelsAsync();
+        _ = WatchLoadedModelAsync();
     }
 
     partial void OnIsModelReadyChanged(bool value) => ReadinessChanged?.Invoke(this, EventArgs.Empty);
@@ -131,6 +132,57 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
             {
                 StatusText = $"Ready. Note: {string.Join(" ", warnings)}";
             }
+        }
+        finally
+        {
+            IsModelLoading = false;
+        }
+    }
+
+    /// <summary>How often the app confirms the model is still in memory.</summary>
+    private static readonly TimeSpan LoadedCheckInterval = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Keeps "ready" truthful: Foundry Local unloads idle models after their time-to-live, and the service can stop.
+    /// Every <see cref="LoadedCheckInterval"/> the loaded-model list is read again; an unloaded model is loaded
+    /// again (behind the loading overlay), and an unreachable service turns the app to "not ready".
+    /// </summary>
+    private async Task WatchLoadedModelAsync()
+    {
+        using var timer = new PeriodicTimer(LoadedCheckInterval);
+        while (await timer.WaitForNextTickAsync())
+        {
+            // Skip while the model is being used or changed; the next tick checks again.
+            if (!IsModelReady || IsModelLoading || _activity.IsBusy) continue;
+
+            try
+            {
+                var isLoaded = await _modelClient.IsActiveModelLoadedAsync();
+                if (IsModelLoading || _activity.IsBusy) continue; // something started while we were asking
+
+                if (isLoaded is null)
+                {
+                    SetNotReady("Foundry Local is not responding. Click ↻ to reconnect.");
+                }
+                else if (isLoaded == false)
+                {
+                    await ReloadActiveModelAsync();
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // This loop runs unobserved; without this, one unexpected error would silently end all checking.
+                SetNotReady($"Could not check the model state: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task ReloadActiveModelAsync()
+    {
+        BeginLoading($"Foundry Local unloaded {_modelClient.ActiveModelId}.\nLoading it again...");
+        try
+        {
+            ApplyStatus(await _modelClient.LoadActiveModelAsync());
         }
         finally
         {

@@ -262,10 +262,12 @@ public class FoundryLocalServiceTests
     [Fact]
     public async Task SwitchingModels_ReportsAFailedUnloadButStillLoadsTheNewModel()
     {
+        var loaded = new List<string>();
         var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
         {
             _ when path.StartsWith("/openai/unload/") => new HttpResponseMessage(HttpStatusCode.InternalServerError),
-            "/openai/loadedmodels" => FakeServer.Json("[]"),
+            _ when path.StartsWith("/openai/load/") => Loaded(loaded, path),
+            "/openai/loadedmodels" => FakeServer.Json(System.Text.Json.JsonSerializer.Serialize(loaded)),
             _ => FakeServer.Json("{}")
         });
         var options = Options();
@@ -366,6 +368,54 @@ public class FoundryLocalServiceTests
 
         Assert.False(result.Status.IsAvailable);
         Assert.Contains("catalog has no model named 'no-such-model'", result.Status.Problem);
+    }
+
+    [Fact]
+    public async Task NotReady_WhenTheLoadIsAcceptedButTheModelNeverAppearsAsLoaded()
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            "/openai/loadedmodels" => FakeServer.Json("[]"),
+            _ => FakeServer.Json("{}") // the load route answers 200 but nothing gets loaded
+        });
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        var status = await service.CheckAsync(ensureModelLoaded: true);
+
+        Assert.False(status.IsAvailable);
+        Assert.Contains("accepted the request to load 'qwen2.5-0.5b-instruct-generic-cpu', but the model is not in its loaded models", status.Problem);
+    }
+
+    [Fact]
+    public async Task NotReady_WhenFoundryLocalCannotReportItsLoadedModels()
+    {
+        // The service and its catalog answer, but the loaded-model list fails: "the server is up" is not enough.
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            "/foundry/list" => FakeServer.Json(CatalogJson),
+            "/openai/loadedmodels" => new HttpResponseMessage(HttpStatusCode.InternalServerError),
+            _ => FakeServer.Json("{}")
+        });
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        var status = await service.CheckAsync(ensureModelLoaded: true);
+
+        Assert.False(status.IsAvailable);
+        Assert.Contains("did not report which models are loaded", status.Problem);
+    }
+
+    [Fact]
+    public async Task IsActiveModelLoaded_ReflectsTheServiceNow()
+    {
+        var foundry = new StatefulFoundry();
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), foundry.Server);
+        Assert.Null(await service.IsActiveModelLoadedAsync());          // service not found yet
+
+        await service.CheckAsync(ensureModelLoaded: true);
+        Assert.True(await service.IsActiveModelLoadedAsync());
+
+        foundry.Loaded.Clear();                                          // unloaded after its idle time-to-live
+        Assert.False(await service.IsActiveModelLoadedAsync());
     }
 
     [Theory]
@@ -523,13 +573,24 @@ public class FoundryLocalServiceTests
     }
 
     /// <summary>The reported setup: the tiny default is loaded, phi-4-mini is only downloaded, plus a speech model.</summary>
-    private static FakeServer MachineWithPhiDownloaded() =>
-        new(new[] { "127.0.0.1:5273" }, path => path switch
+    private static FakeServer MachineWithPhiDownloaded()
+    {
+        var loaded = new List<string> { "qwen2.5-0.5b-instruct-generic-cpu" };
+        return new(new[] { "127.0.0.1:5273" }, path => path switch
         {
-            "/openai/loadedmodels" => FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu"]"""),
+            "/openai/loadedmodels" => FakeServer.Json(System.Text.Json.JsonSerializer.Serialize(loaded)),
             "/openai/models" => FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu","Phi-4-mini-instruct-generic-gpu:5","whisper-tiny-generic-cpu"]"""),
+            _ when path.StartsWith("/openai/load/") => Loaded(loaded, path),
             _ => FakeServer.Json("{}")
         });
+    }
+
+    /// <summary>Records a load like the real service: the model then appears in /openai/loadedmodels.</summary>
+    private static HttpResponseMessage Loaded(List<string> loaded, string path)
+    {
+        loaded.Add(Uri.UnescapeDataString(path["/openai/load/".Length..].Split('?')[0]));
+        return FakeServer.Json("{}");
+    }
 
     [Fact]
     public async Task PrefersDownloadedPhiOverALoadedTinyModel_AndLoadsIt()

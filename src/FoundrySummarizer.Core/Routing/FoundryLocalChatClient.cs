@@ -81,6 +81,10 @@ public sealed class FoundryLocalChatClient : IChatClient
         return new ModelSwitchResult(status, unloadProblem);
     }
 
+    /// <summary>Whether the active model is in Foundry Local's memory now; null when that cannot be determined.</summary>
+    public Task<bool?> IsActiveModelLoadedAsync(CancellationToken cancellationToken = default) =>
+        _localService.IsActiveModelLoadedAsync(cancellationToken);
+
     /// <summary>Loads the active model into memory now, so the first summary does not wait for it.</summary>
     public Task<LocalModelStatus> LoadActiveModelAsync(CancellationToken cancellationToken = default) =>
         _localService.CheckAsync(ensureModelLoaded: true, cancellationToken);

@@ -181,7 +181,8 @@ public sealed class FoundryLocalService : IDisposable
         {
             return _serviceBase is null
                 ? "The local model service has not been found yet."
-                : await LoadModelAsync(_serviceBase, _activeModelId, cancellationToken);
+                : await LoadModelAsync(_serviceBase, _activeModelId, cancellationToken)
+                  ?? await ConfirmLoadedAsync(_serviceBase, _activeModelId, cancellationToken);
         }
         finally
         {
@@ -234,22 +235,36 @@ public sealed class FoundryLocalService : IDisposable
             }
 
             var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
-            bool isFoundry = loaded is not null;
+            var foundryCatalog = await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken);
+
+            // Foundry Local is recognised by either of its own routes. A failed loaded-model listing alone must not
+            // make it look like a server that loads models on demand (e.g. Ollama), or "ready" would only mean
+            // "the service answers".
+            bool isFoundry = loaded is not null || foundryCatalog is not null;
             await SelectModelAsync(serviceBase, loaded, cancellationToken);
-            if (isFoundry)
+            if (foundryCatalog is not null)
             {
                 // Requests must name the model exactly as the catalog does ("…-gpu:5"), or Foundry Local rejects them.
-                _activeModelId = ResolveId(await GetFoundryCatalogAsync(serviceBase, refresh: false, cancellationToken), _activeModelId);
+                _activeModelId = ResolveId(foundryCatalog, _activeModelId);
             }
 
-            // Checked against the service on every call (never cached): Foundry Local unloads idle models after
-            // their time-to-live, so a model loaded earlier in the session may be gone now.
-            if (ensureModelLoaded && isFoundry && !loaded!.Any(id => SameModel(id, _activeModelId)))
+            if (ensureModelLoaded && isFoundry)
             {
-                var loadProblem = await LoadModelAsync(serviceBase, _activeModelId, cancellationToken);
-                if (loadProblem is not null)
+                if (loaded is null)
                 {
-                    return Unavailable(loadProblem);
+                    return Unavailable("Foundry Local did not report which models are loaded (/openai/loadedmodels), so the app cannot confirm the model is ready. Restart it with 'foundry service restart'.");
+                }
+
+                // Checked against the service on every call (never cached): Foundry Local unloads idle models after
+                // their time-to-live, so a model loaded earlier in the session may be gone now.
+                if (!loaded.Any(id => SameModel(id, _activeModelId)))
+                {
+                    var loadProblem = await LoadModelAsync(serviceBase, _activeModelId, cancellationToken)
+                                      ?? await ConfirmLoadedAsync(serviceBase, _activeModelId, cancellationToken);
+                    if (loadProblem is not null)
+                    {
+                        return Unavailable(loadProblem);
+                    }
                 }
             }
 
@@ -306,6 +321,50 @@ public sealed class FoundryLocalService : IDisposable
             return $"Loading model '{loadId}' failed: {ex.Message}";
         }
     }
+
+    /// <summary>
+    /// Whether the active model is in Foundry Local's memory right now.
+    /// </summary>
+    /// <returns>True or false for Foundry Local; null when the service is unreachable or does not report loaded models.</returns>
+    public async Task<bool?> IsActiveModelLoadedAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_serviceBase is null) return null;
+            var loaded = await _catalog.TryGetModelIdsAsync(_serviceBase, "/openai/loadedmodels", cancellationToken);
+            return loaded?.Any(id => SameModel(id, _activeModelId));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// A successful load response is not proof: the model counts as loaded only once it is in the service's
+    /// loaded-model list. Checked a few times because the list can lag the load response slightly.
+    /// </summary>
+    /// <returns>Null when confirmed; otherwise the reason.</returns>
+    private async Task<string?> ConfirmLoadedAsync(Uri serviceBase, string modelId, CancellationToken cancellationToken)
+    {
+        for (int attempt = 0; attempt < LoadConfirmAttempts; attempt++)
+        {
+            if (attempt > 0) await Task.Delay(LoadConfirmDelay, cancellationToken);
+
+            var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken);
+            if (loaded is not null && loaded.Any(id => SameModel(id, modelId)))
+            {
+                return null;
+            }
+        }
+
+        return $"Foundry Local accepted the request to load '{modelId}', but the model is not in its loaded models. " +
+               $"Try loading it in a terminal with 'foundry model run {modelId}' to see Foundry Local's error.";
+    }
+
+    private const int LoadConfirmAttempts = 4;
+    private static readonly TimeSpan LoadConfirmDelay = TimeSpan.FromMilliseconds(500);
 
     /// <summary>Returns Foundry Local's catalog, fetching it when missing, stale (new address) or <paramref name="refresh"/> is set.</summary>
     /// <returns>The catalog, or null when the server has none (e.g. Ollama) or it cannot be read.</returns>
