@@ -1,15 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Windows;
+using FoundrySummarizer.Presentation.Services;
 
 namespace FoundrySummarizer.Wpf.Services;
-
-/// <summary>Copies text to the system clipboard.</summary>
-public interface IClipboardService
-{
-    /// <summary>Places <paramref name="text"/> on the clipboard.</summary>
-    /// <returns>Null on success; otherwise why the copy failed.</returns>
-    string? TrySetText(string text);
-}
 
 /// <summary>Uses the WPF clipboard.</summary>
 public sealed class WpfClipboardService : IClipboardService

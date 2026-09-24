@@ -1,4 +1,4 @@
-namespace FoundrySummarizer.Wpf.Services;
+namespace FoundrySummarizer.Presentation.Services;
 
 /// <summary>
 /// Tracks model work in progress (a summary or a chat answer), so the model is not switched or unloaded

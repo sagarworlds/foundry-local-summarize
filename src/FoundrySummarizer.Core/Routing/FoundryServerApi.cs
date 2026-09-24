@@ -71,7 +71,7 @@ public sealed class FoundryServerApi : IModelManagementApi
 
         try
         {
-            return new ModelIdListing(LocalModelCatalog.ParseModelIds(result.Body), null);
+            return new ModelIdListing(ModelListParser.ParseModelIds(result.Body), null);
         }
         catch (JsonException ex)
         {

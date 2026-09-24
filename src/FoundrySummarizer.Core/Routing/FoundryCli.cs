@@ -30,10 +30,18 @@ public sealed class FoundryCli : IFoundryCli
     // Foundry Local 1.x+: "State    Ready … Web URLs http://127.0.0.1:56294"
     private static readonly Regex ServiceUrl = new(@"(?:running on|Web URLs?)\s*:?\s*(?<url>https?://[^\s,]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private readonly string _executable;
+
+    /// <param name="executable">The CLI to run; "foundry" (found on PATH) unless a test or custom install needs another.</param>
+    public FoundryCli(string executable = "foundry")
+    {
+        _executable = string.IsNullOrWhiteSpace(executable) ? throw new ArgumentException("An executable is required.", nameof(executable)) : executable;
+    }
+
     /// <inheritdoc />
     public async Task<FoundryCliResult> RunAsync(string arguments, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
-        var startInfo = new ProcessStartInfo("foundry", arguments)
+        var startInfo = new ProcessStartInfo(_executable, arguments)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -52,7 +60,7 @@ public sealed class FoundryCli : IFoundryCli
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
         {
             return new FoundryCliResult(false, string.Empty,
-                "The 'foundry' command was not found. Install Foundry Local (winget install Microsoft.FoundryLocal) or set Foundry:Local:Endpoint explicitly.");
+                $"The '{_executable}' command was not found. Install Foundry Local (winget install Microsoft.FoundryLocal) or set Foundry:Local:Endpoint explicitly.");
         }
 
         using (process)
@@ -67,12 +75,12 @@ public sealed class FoundryCli : IFoundryCli
                 var output = (await stdout) + (await stderr);
                 return process.ExitCode == 0
                     ? new FoundryCliResult(true, output, null)
-                    : new FoundryCliResult(false, output, $"'foundry {arguments}' exited with code {process.ExitCode}: {output.Trim()}");
+                    : new FoundryCliResult(false, output, $"'{_executable} {arguments}' exited with code {process.ExitCode}: {output.Trim()}");
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 TryKill(process);
-                return new FoundryCliResult(false, string.Empty, $"'foundry {arguments}' did not finish within {timeout.TotalSeconds:F0}s.");
+                return new FoundryCliResult(false, string.Empty, $"'{_executable} {arguments}' did not finish within {timeout.TotalSeconds:F0}s.");
             }
         }
     }

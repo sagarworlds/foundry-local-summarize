@@ -1,7 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 
-namespace FoundrySummarizer.Wpf.ViewModels;
+namespace FoundrySummarizer.Presentation.ViewModels;
 
 /// <summary>
 /// The window: the model picker, a Summarize tab and a Chat tab for follow-up questions.

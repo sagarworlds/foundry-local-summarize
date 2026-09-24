@@ -1,4 +1,4 @@
-namespace FoundrySummarizer.Wpf.Services;
+namespace FoundrySummarizer.Presentation.Services;
 
 /// <summary>Whether a model is loaded and can answer. Screens use it to enable or disable their actions.</summary>
 public interface IModelReadiness

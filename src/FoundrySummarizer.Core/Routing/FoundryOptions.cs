@@ -131,9 +131,16 @@ public class FoundryOptions
         set => Local.ModelId = value;
     }
 
-    private static string? TryReadDaemonFileEndpoint()
+    private static string? TryReadDaemonFileEndpoint() =>
+        ReadDaemonFileEndpoint(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".foundry", "daemon.json"));
+
+    /// <summary>
+    /// Reads the service address that older Foundry Local versions wrote to <c>~/.foundry/daemon.json</c>.
+    /// </summary>
+    /// <param name="daemonPath">Path of the daemon file.</param>
+    /// <returns>The OpenAI-compatible endpoint (…/v1), or null when the file is missing, unreadable or has no address.</returns>
+    public static string? ReadDaemonFileEndpoint(string daemonPath)
     {
-        string daemonPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".foundry", "daemon.json");
         if (!File.Exists(daemonPath)) return null;
 
         try

@@ -2,9 +2,9 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FoundrySummarizer.Core.Routing;
-using FoundrySummarizer.Wpf.Services;
+using FoundrySummarizer.Presentation.Services;
 
-namespace FoundrySummarizer.Wpf.ViewModels;
+namespace FoundrySummarizer.Presentation.ViewModels;
 
 /// <summary>
 /// The model dropdown: lists the models downloaded on this machine, loads the chosen one (unloading the previous
@@ -52,8 +52,10 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
     /// <param name="modelClient">Lists, loads and unloads Foundry Local models.</param>
     /// <param name="settingsStore">Remembers the chosen model between runs.</param>
     /// <param name="activity">Tells whether a summary or answer is running (the model is locked meanwhile).</param>
-    public ModelPickerViewModel(FoundryLocalChatClient modelClient, IUserSettingsStore settingsStore, IActivityTracker activity)
+    /// <param name="loadedCheckInterval">How often the loaded model is re-checked; defaults to <see cref="DefaultLoadedCheckInterval"/>.</param>
+    public ModelPickerViewModel(FoundryLocalChatClient modelClient, IUserSettingsStore settingsStore, IActivityTracker activity, TimeSpan? loadedCheckInterval = null)
     {
+        _loadedCheckInterval = loadedCheckInterval ?? DefaultLoadedCheckInterval;
         _modelClient = modelClient;
         _settingsStore = settingsStore;
         _activity = activity;
@@ -140,12 +142,14 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
     }
 
     /// <summary>How often the app confirms the model is still in memory.</summary>
-    private static readonly TimeSpan LoadedCheckInterval = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan DefaultLoadedCheckInterval = TimeSpan.FromSeconds(30);
+
+    private readonly TimeSpan _loadedCheckInterval;
 
     /// <summary>
     /// Keeps "ready" truthful in both directions. Foundry Local unloads idle models after their time-to-live, its
     /// service can stop or restart on a new port, and the user can load the model outside the app. Every
-    /// <see cref="LoadedCheckInterval"/> the service is found again and its loaded models are read:
+    /// <see cref="DefaultLoadedCheckInterval"/> (by default) the service is found again and its loaded models are read:
     /// <list type="bullet">
     /// <item>loaded: ready, even if the app had marked it not ready (e.g. the user loaded it in a terminal);</item>
     /// <item>not loaded: loaded again, if it was ready or only lost because the service stopped answering;</item>
@@ -154,7 +158,7 @@ public partial class ModelPickerViewModel : ObservableObject, IModelReadiness
     /// </summary>
     private async Task WatchLoadedModelAsync()
     {
-        using var timer = new PeriodicTimer(LoadedCheckInterval);
+        using var timer = new PeriodicTimer(_loadedCheckInterval);
         int consecutiveFailures = 0;
         while (await timer.WaitForNextTickAsync())
         {

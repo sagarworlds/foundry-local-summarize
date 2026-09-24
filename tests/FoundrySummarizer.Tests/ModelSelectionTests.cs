@@ -61,13 +61,13 @@ public class ModelSelectionTests
     [InlineData("""[{"name":"phi-4-mini-instruct-generic-gpu"},{"name":"qwen2.5-0.5b"}]""")]
     public void Catalog_ParsesKnownModelListShapes(string json)
     {
-        Assert.Equal(new[] { "phi-4-mini-instruct-generic-gpu", "qwen2.5-0.5b" }, LocalModelCatalog.ParseModelIds(json));
+        Assert.Equal(new[] { "phi-4-mini-instruct-generic-gpu", "qwen2.5-0.5b" }, ModelListParser.ParseModelIds(json));
     }
 
     [Fact]
     public void Catalog_ReturnsEmptyForUnrecognisedPayload()
     {
-        Assert.Empty(LocalModelCatalog.ParseModelIds("""{"status":"ok"}"""));
-        Assert.Empty(LocalModelCatalog.ParseModelIds(""));
+        Assert.Empty(ModelListParser.ParseModelIds("""{"status":"ok"}"""));
+        Assert.Empty(ModelListParser.ParseModelIds(""));
     }
 }

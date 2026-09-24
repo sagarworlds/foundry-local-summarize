@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\FoundrySummarizer.Core\FoundrySummarizer.Core.csproj" />
+    <ProjectReference Include="..\FoundrySummarizer.Presentation\FoundrySummarizer.Presentation.csproj" />
   </ItemGroup>
 
   <ItemGroup>

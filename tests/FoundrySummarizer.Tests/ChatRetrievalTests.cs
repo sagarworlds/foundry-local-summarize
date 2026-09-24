@@ -175,6 +175,50 @@ public class ChatRetrievalTests
         Assert.Single(agent.ChatHistory); // only the system prompt
     }
 
+    [Fact]
+    public async Task ChatAgent_TellsTheModelWhenNoPassageMatches()
+    {
+        var client = new RecordingChatClient();
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever(), new ChatConfig { MaxPassageTokens = 70 });
+        agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
+
+        await agent.AskQuestionAsync("Quantum chromodynamics?");
+
+        Assert.Contains("(No passage of the document matched this question.)", client.Calls.Single().Messages[^1].Text);
+    }
+
+    [Fact]
+    public async Task ChatAgent_IgnoresBlankQuestions()
+    {
+        var client = new RecordingChatClient();
+        var agent = new DocumentChatAgent(client, SmallPassageRetriever());
+        agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
+
+        Assert.Equal(string.Empty, await agent.AskQuestionAsync("   "));
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public void ChatAgent_RejectsASummaryBeforeADocument()
+    {
+        var agent = new DocumentChatAgent(new RecordingChatClient());
+
+        Assert.Throws<InvalidOperationException>(() => agent.UpdateSummary("summary"));
+    }
+
+    [Fact]
+    public async Task ChatAgent_ResetForgetsTheDocument()
+    {
+        var agent = new DocumentChatAgent(new RecordingChatClient(), SmallPassageRetriever());
+        agent.InitializeSession("Plan.txt", BuildDocument(), "summary");
+
+        agent.Reset();
+
+        Assert.False(agent.HasDocument);
+        Assert.Empty(agent.ChatHistory);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => agent.AskQuestionAsync("Who leads the security audit?"));
+    }
+
     private sealed class FailingChatClient : IChatClient
     {
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>

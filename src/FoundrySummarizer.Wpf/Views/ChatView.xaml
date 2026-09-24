@@ -4,7 +4,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:converters="clr-namespace:FoundrySummarizer.Wpf.Converters"
-             xmlns:vm="clr-namespace:FoundrySummarizer.Wpf.ViewModels"
+             xmlns:vm="clr-namespace:FoundrySummarizer.Presentation.ViewModels;assembly=FoundrySummarizer.Presentation"
              mc:Ignorable="d" d:DesignHeight="650" d:DesignWidth="1080">
     <UserControl.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />

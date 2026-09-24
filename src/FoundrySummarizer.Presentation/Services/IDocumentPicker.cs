@@ -1,4 +1,4 @@
-namespace FoundrySummarizer.Wpf.Services;
+namespace FoundrySummarizer.Presentation.Services;
 
 /// <summary>Asks the user to choose a document file.</summary>
 public interface IDocumentPicker
