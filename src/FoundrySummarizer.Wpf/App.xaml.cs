@@ -42,6 +42,7 @@ public partial class App : Application
 
         services.AddSingleton<IDocumentPicker, OpenFileDocumentPicker>();
         services.AddSingleton<IClipboardService, WpfClipboardService>();
+        services.AddSingleton<IUserSettingsStore, JsonUserSettingsStore>();
 
         services.AddSingleton<SummarizerViewModel>();
         services.AddSingleton<ChatViewModel>();

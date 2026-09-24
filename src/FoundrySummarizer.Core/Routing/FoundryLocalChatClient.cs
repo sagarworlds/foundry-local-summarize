@@ -45,6 +45,20 @@ public sealed class FoundryLocalChatClient : IChatClient
     /// <summary>The discovered Foundry Local endpoint once found, else the configured one.</summary>
     public Uri ActiveEndpoint => _localService.Endpoint ?? new Uri(_options.GetEffectiveLocalEndpoint());
 
+    /// <summary>The model the user chose, or null when it is chosen automatically.</summary>
+    public string? UserSelectedModelId => _localService.UserSelectedModelId;
+
+    /// <summary>Lists the chat models downloaded on this machine (starting Foundry Local if needed).</summary>
+    public Task<LocalModelList> ListModelsAsync(CancellationToken cancellationToken = default) =>
+        _localService.ListModelsAsync(cancellationToken);
+
+    /// <summary>Uses <paramref name="modelId"/> from now on; null returns to automatic selection.</summary>
+    public void SelectModel(string? modelId) => _localService.SelectModel(modelId);
+
+    /// <summary>Loads the active model into memory now, so the first summary does not wait for it.</summary>
+    public Task<LocalModelStatus> LoadActiveModelAsync(CancellationToken cancellationToken = default) =>
+        _localService.CheckAsync(ensureModelLoaded: true, cancellationToken);
+
     /// <summary>Endpoint, model and (when unreachable) the reason, for status displays. Does not load a model.</summary>
     public Task<LocalModelStatus> GetStatusAsync(CancellationToken cancellationToken = default) =>
         _localService.CheckAsync(ensureModelLoaded: false, cancellationToken);

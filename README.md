@@ -45,7 +45,18 @@ Every style tells the model to use only facts from the document, copy figures, d
 
 ### Finding Foundry Local
 
-Foundry Local starts on a new port every time, so the app runs `foundry service status` to find it (as the official SDK does). If the service is stopped, it runs `foundry service start`. It then picks the best model you have (`Local.PreferredModels`, default `phi-4-mini`, `qwen2.5-7b`, `phi-3.5-mini`, `qwen2.5-1.5b`, falling back to `Local.ModelId`) and loads it before the first request. The status in the top-right corner shows the model in use, or why none is reachable.
+Foundry Local starts on a new port every time, so the app runs `foundry service status` to find it (as the official SDK does). If the service is stopped, it runs `foundry service start`. It then picks a model and loads it before the first request.
+
+### Choosing the model
+
+The **Model** list in the top-right corner shows every chat model downloaded on your PC, with loaded models marked "● in memory". Pick one (for example `Phi-4-mini-instruct-generic-gpu:5`) and the app loads it straight away. Your choice is remembered in `%LOCALAPPDATA%\FoundrySummarizer\user-settings.json`. Click **↻** after downloading a new model.
+
+Until you pick one, the app chooses automatically:
+1. The best `Local.PreferredModels` entry that is loaded (default order: `phi-4-mini`, `qwen2.5-7b`, `phi-3.5-mini`, `qwen2.5-1.5b`).
+2. Otherwise the best preferred model that is downloaded. It is loaded on first use.
+3. Otherwise `Local.ModelId`.
+
+A tiny model that happens to be loaded never beats a preferred model on disk.
 
 If no model can answer, the app shows the reason. It never shows made-up text in place of a summary.
 

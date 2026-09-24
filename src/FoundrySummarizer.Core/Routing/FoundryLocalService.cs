@@ -14,6 +14,16 @@ namespace FoundrySummarizer.Core.Routing;
 /// <param name="Client">Chat client for the model; null when unavailable.</param>
 public record LocalModelStatus(bool IsAvailable, Uri? Endpoint, string ModelId, string? Problem, IChatClient? Client);
 
+/// <summary>A chat model available on this machine.</summary>
+/// <param name="Id">Model id as the service reports it, e.g. "Phi-4-mini-instruct-generic-gpu:5".</param>
+/// <param name="IsLoaded">True when the model is already in memory and answers without a load delay.</param>
+public record LocalModelInfo(string Id, bool IsLoaded);
+
+/// <summary>Result of listing the models on this machine.</summary>
+/// <param name="Models">Downloaded chat models, loaded ones first; empty when the service is unreachable.</param>
+/// <param name="Problem">Why the list could not be read; null on success.</param>
+public record LocalModelList(IReadOnlyList<LocalModelInfo> Models, string? Problem);
+
 /// <summary>
 /// Finds, starts and checks Foundry Local (or another OpenAI-compatible local server such as Ollama), picks the
 /// model and makes sure it is loaded. Every failure is reported with a reason, so the app can tell the user why
@@ -36,6 +46,10 @@ public sealed class FoundryLocalService : IDisposable
     private string _activeModelId;
     private IChatClient? _client;
     private string? _clientKey;
+    private string? _userSelectedModelId;
+
+    // Speech, embedding and image models share the listing but cannot answer chat requests.
+    private static readonly string[] NonChatMarkers = { "whisper", "embed", "tts", "vision-encoder" };
 
     /// <param name="options">Local endpoint, model and timeout settings.</param>
     /// <param name="cli">Foundry CLI runner; defaults to the real <c>foundry</c> executable.</param>
@@ -54,6 +68,69 @@ public sealed class FoundryLocalService : IDisposable
 
     /// <summary>The model requests are sent to (configured, or the best available when auto-selection is on).</summary>
     public string ActiveModelId => _activeModelId;
+
+    /// <summary>The model the user chose, or null to choose automatically from the preferences.</summary>
+    public string? UserSelectedModelId => _userSelectedModelId;
+
+    /// <summary>
+    /// Uses <paramref name="modelId"/> for all further requests, or returns to automatic selection when null.
+    /// The model is loaded on the next <see cref="CheckAsync"/> with <c>ensureModelLoaded</c>.
+    /// </summary>
+    /// <param name="modelId">A model id from <see cref="ListModelsAsync"/>, or null for automatic.</param>
+    public void SelectModel(string? modelId)
+    {
+        _userSelectedModelId = string.IsNullOrWhiteSpace(modelId) ? null : modelId.Trim();
+        if (_userSelectedModelId is not null)
+        {
+            _activeModelId = _userSelectedModelId;
+        }
+    }
+
+    /// <summary>
+    /// Lists the chat models downloaded on this machine, finding (and, if configured, starting) the service first.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the listing.</param>
+    public async Task<LocalModelList> ListModelsAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var (serviceBase, problem) = await FindReachableServiceAsync(cancellationToken);
+            if (serviceBase is null)
+            {
+                return new LocalModelList(Array.Empty<LocalModelInfo>(), problem);
+            }
+
+            var loaded = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/loadedmodels", cancellationToken) ?? Array.Empty<string>();
+            var downloaded = await ListDownloadedAsync(serviceBase, cancellationToken);
+            var loadedSet = loaded.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var models = downloaded.Concat(loaded)
+                .Where(IsChatModel)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(id => new LocalModelInfo(id, loadedSet.Contains(id)))
+                .OrderByDescending(m => m.IsLoaded)
+                .ThenBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return new LocalModelList(models, models.Count == 0
+                ? "No models are downloaded. Download one with 'foundry model download phi-4-mini'."
+                : null);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private static bool IsChatModel(string id) =>
+        !NonChatMarkers.Any(marker => id.Contains(marker, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Foundry Local lists downloaded (cached) models at /openai/models; other servers at /v1/models.</summary>
+    private async Task<IReadOnlyList<string>> ListDownloadedAsync(Uri serviceBase, CancellationToken cancellationToken) =>
+        await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/models", cancellationToken)
+        ?? await _catalog.TryGetModelIdsAsync(serviceBase, "/v1/models", cancellationToken)
+        ?? Array.Empty<string>();
 
     /// <summary>The OpenAI-compatible endpoint last found, or null before the first successful check.</summary>
     public Uri? Endpoint => _serviceBase is null ? null : new Uri(_serviceBase, "v1");
@@ -220,9 +297,20 @@ public sealed class FoundryLocalService : IDisposable
         }
     }
 
-    /// <summary>Chooses the model: best preferred loaded model, else best preferred cached/listed model, else configured.</summary>
+    /// <summary>
+    /// Chooses the model: the user's choice; else the best preferred model that is loaded; else the best preferred
+    /// model that is downloaded (it is loaded before use); else the configured <c>Local.ModelId</c>.
+    /// A weak model that happens to be loaded never outranks a preferred one on disk: loading takes a minute once,
+    /// while a sub-1B model gives poor summaries every time.
+    /// </summary>
     private async Task SelectModelAsync(Uri serviceBase, IReadOnlyList<string>? loaded, CancellationToken cancellationToken)
     {
+        if (_userSelectedModelId is not null)
+        {
+            _activeModelId = _userSelectedModelId;
+            return;
+        }
+
         if (!_options.Local.AutoSelectModel)
         {
             _activeModelId = _options.LocalModelId;
@@ -238,19 +326,10 @@ public sealed class FoundryLocalService : IDisposable
                 _activeModelId = fromLoaded;
                 return;
             }
-
-            // A loaded model outranks an unloaded preferred one: it answers immediately.
-            if (loaded.Contains(_options.LocalModelId, StringComparer.OrdinalIgnoreCase))
-            {
-                _activeModelId = _options.LocalModelId;
-                return;
-            }
         }
 
-        var listed = await _catalog.TryGetModelIdsAsync(serviceBase, "/openai/models", cancellationToken)
-                     ?? await _catalog.TryGetModelIdsAsync(serviceBase, "/v1/models", cancellationToken)
-                     ?? Array.Empty<string>();
-        _activeModelId = LocalModelSelector.Select(listed, preferences, _options.LocalModelId);
+        var downloaded = await ListDownloadedAsync(serviceBase, cancellationToken);
+        _activeModelId = LocalModelSelector.Select(downloaded, preferences, _options.LocalModelId);
     }
 
     private IChatClient GetOrCreateClient(Uri serviceBase)

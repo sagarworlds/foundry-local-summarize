@@ -9,7 +9,12 @@
         Height="680" Width="1080"
         MinHeight="540" MinWidth="840"
         WindowStartupLocation="CenterScreen"
+        xmlns:converters="clr-namespace:FoundrySummarizer.Wpf.Converters"
         Background="{StaticResource BgPrimaryBrush}">
+
+    <Window.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BoolToVis" />
+    </Window.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -36,6 +41,7 @@
                                  Command="{Binding SelectTabCommand}" CommandParameter="1" />
                 </StackPanel>
 
+                <!-- Foundry Local: status dot, model picker, status text, refresh -->
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right" VerticalAlignment="Center">
                     <Ellipse Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center">
                         <Ellipse.Style>
@@ -49,11 +55,25 @@
                             </Style>
                         </Ellipse.Style>
                     </Ellipse>
+                    <TextBlock Text="Model:" Style="{StaticResource MutedText}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                    <ComboBox ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel}"
+                              IsEnabled="{Binding CanChangeModel}" Width="290" Height="32" Margin="0,0,10,0"
+                              ToolTip="Models downloaded on this PC. Download more with: foundry model download &lt;model&gt;">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Id}" />
+                                    <TextBlock Text="  ● in memory" Foreground="{StaticResource SuccessBrush}" FontSize="11" VerticalAlignment="Center"
+                                               Visibility="{Binding IsLoaded, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
                     <TextBlock Text="{Binding ModelStatusText}" ToolTip="{Binding ModelStatusText}"
-                               Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" MaxWidth="420"
+                               Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" MaxWidth="260"
                                TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,10,0" />
-                    <Button Content="↻ Check" Style="{StaticResource SecondaryButton}" Command="{Binding RefreshModelStatusCommand}"
-                            Padding="8,4" FontSize="11" ToolTip="Check whether Foundry Local is running" />
+                    <Button Content="↻" Style="{StaticResource SecondaryButton}" Command="{Binding RefreshModelsCommand}"
+                            Padding="10,4" FontSize="13" ToolTip="Refresh the model list (starts Foundry Local if it is not running)" />
                 </StackPanel>
             </DockPanel>
         </Border>

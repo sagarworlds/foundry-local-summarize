@@ -294,6 +294,86 @@ public class FoundryLocalServiceTests
         Assert.NotNull(ex.InnerException);
     }
 
+    /// <summary>The reported setup: the tiny default is loaded, phi-4-mini is only downloaded, plus a speech model.</summary>
+    private static FakeServer MachineWithPhiDownloaded() =>
+        new(new[] { "127.0.0.1:5273" }, path => path switch
+        {
+            "/openai/loadedmodels" => FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu"]"""),
+            "/openai/models" => FakeServer.Json("""["qwen2.5-0.5b-instruct-generic-cpu","Phi-4-mini-instruct-generic-gpu:5","whisper-tiny-generic-cpu"]"""),
+            _ => FakeServer.Json("{}")
+        });
+
+    [Fact]
+    public async Task PrefersDownloadedPhiOverALoadedTinyModel_AndLoadsIt()
+    {
+        var server = MachineWithPhiDownloaded();
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        var status = await service.CheckAsync(ensureModelLoaded: true);
+
+        Assert.True(status.IsAvailable, status.Problem);
+        Assert.Equal("Phi-4-mini-instruct-generic-gpu:5", status.ModelId);
+        Assert.Contains(server.Requests, r => r.StartsWith("/openai/load/Phi-4-mini-instruct-generic-gpu"));
+    }
+
+    [Fact]
+    public async Task ListsDownloadedChatModels_LoadedFirst()
+    {
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), MachineWithPhiDownloaded());
+
+        var list = await service.ListModelsAsync();
+
+        Assert.Null(list.Problem);
+        Assert.Equal(new[]
+        {
+            new LocalModelInfo("qwen2.5-0.5b-instruct-generic-cpu", IsLoaded: true),
+            new LocalModelInfo("Phi-4-mini-instruct-generic-gpu:5", IsLoaded: false)
+        }, list.Models);
+    }
+
+    [Fact]
+    public async Task ListingModels_StartsTheServiceWhenItIsStopped()
+    {
+        var cli = new FakeCli((args, call) => args switch
+        {
+            "service status" when call == 1 => new FoundryCliResult(true, "🔴 Model management service is not running!", null),
+            "service start" => new FoundryCliResult(true, "Service started.", null),
+            _ => new FoundryCliResult(true, RunningStatus, null)
+        });
+        using var service = new FoundryLocalService(Options(), cli, MachineWithPhiDownloaded());
+
+        var list = await service.ListModelsAsync();
+
+        Assert.Contains("service start", cli.Commands);
+        Assert.Equal(2, list.Models.Count);
+    }
+
+    [Fact]
+    public async Task ListingModels_ExplainsWhenNothingIsDownloaded()
+    {
+        var server = new FakeServer(new[] { "127.0.0.1:5273" }, _ => FakeServer.Json("[]"));
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        var list = await service.ListModelsAsync();
+
+        Assert.Empty(list.Models);
+        Assert.Contains("foundry model download phi-4-mini", list.Problem);
+    }
+
+    [Fact]
+    public async Task UserChoiceOverridesAutomaticSelection_AndAutomaticCanBeRestored()
+    {
+        var server = MachineWithPhiDownloaded();
+        using var service = new FoundryLocalService(Options(), FakeCli.Always(RunningStatus), server);
+
+        service.SelectModel("qwen2.5-0.5b-instruct-generic-cpu");
+        Assert.Equal("qwen2.5-0.5b-instruct-generic-cpu", (await service.CheckAsync(ensureModelLoaded: true)).ModelId);
+        Assert.DoesNotContain(server.Requests, r => r.StartsWith("/openai/load/")); // already loaded
+
+        service.SelectModel(null);
+        Assert.Equal("Phi-4-mini-instruct-generic-gpu:5", (await service.CheckAsync(ensureModelLoaded: false)).ModelId);
+    }
+
     [Theory]
     [InlineData("""{"model":"m","max_completion_tokens":50}""", """{"model":"m","max_tokens":50}""")]
     [InlineData("""{"model":"m","max_tokens":10,"max_completion_tokens":50}""", """{"model":"m","max_tokens":10}""")]
