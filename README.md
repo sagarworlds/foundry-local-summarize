@@ -161,17 +161,37 @@ Settings are read from `appsettings.json` in the installation folder (when runni
 ## Architecture
 
 ```mermaid
-graph LR
-    File["Document<br/>.docx .pptx .pdf .txt"] --> Extract["Text extraction<br/>OpenXml · PdfPig"]
-    Extract --> Summarize["Summarizer<br/>single pass or parts → notes → summary"]
-    Extract --> Chat["Chat agent<br/>BM25 passage retrieval"]
-    Summarize -. summary and suggested questions .-> Chat
-    Summarize --> Client["FoundryLocalChatClient"]
-    Chat --> Client
-    Client --> Service["FoundryLocalService<br/>discover · start · select · load"]
-    Service --> Api["IModelManagementApi<br/>Foundry Local 1.x+ · 0.x · OpenAI-compatible"]
-    Api --> Host["Foundry Local"]
+flowchart TB
+    subgraph App["Foundry Local Summarizer"]
+        direction LR
+        File["Document<br/>.docx · .pptx · .pdf · .txt"] --> Extract["Text extraction<br/>OpenXml · PdfPig"]
+        Styles["Summary styles<br/>Prompty templates"] --> Summarizer
+        Extract --> Summarizer["MultiPartSummarizer<br/>single pass, or parts → notes → summary"]
+        Extract -- document text --> Chat["DocumentChatAgent<br/>BM25 passage retrieval"]
+        Summarizer -- summary --> Chat
+        Summarizer --> Questions["FollowUpQuestionGenerator<br/>suggested questions from the summary"]
+        Summarizer --> Client["FoundryLocalChatClient"]
+        Chat --> Client
+        Questions --> Client
+        Picker["Model selector"] --> Client
+        Client --> Service["FoundryLocalService<br/>discover · start · select · confirm loaded"]
+        Service --> Api["IModelManagementApi<br/>1.x+ · 0.x · OpenAI-compatible"]
+    end
+
+    CLI["foundry CLI"]
+    Host["Foundry Local"]
+
+    Client -- "chat completions<br/>/v1/chat/completions" --> Host
+    Api -- "list · load · unload models" --> Host
+    Service -- "status · start" --> CLI
+    Api -. "model list (1.x+)" .-> CLI
+    CLI --> Host
 ```
+
+Summaries, answers and suggested questions are sent by `FoundryLocalChatClient` directly to Foundry Local's
+OpenAI-compatible endpoint. Before each request, `FoundryLocalService` makes sure the service is running and the selected
+model is loaded; model listing, loading and unloading go through the `IModelManagementApi` implementation that matches
+the detected Foundry Local version.
 
 | Component | Responsibility |
 |---|---|
