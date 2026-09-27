@@ -99,6 +99,19 @@
                         <TextBlock Text="Summary" Style="{StaticResource HeadingMedium}" DockPanel.Dock="Left" VerticalAlignment="Center" />
                         <Button Content="📋 Copy" Style="{StaticResource SecondaryButton}" Command="{Binding CopySummaryCommand}" HorizontalAlignment="Right" />
                     </DockPanel>
+                    <!-- Whether the summary's amounts, percentages and dates appear in the document -->
+                    <TextBlock DockPanel.Dock="Bottom" Text="{Binding FigureCheckText}" TextWrapping="Wrap" Margin="0,8,0,0"
+                               Visibility="{Binding HasFigureCheck, Converter={StaticResource BoolToVis}}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource MutedText}">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasUnverifiedFigures}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                     <TextBox Text="{Binding Summary, Mode=OneWay}" IsReadOnly="True"
                              Style="{StaticResource ModernTextBox}" TextWrapping="Wrap"
                              FontFamily="Consolas, Segoe UI" FontSize="13" VerticalScrollBarVisibility="Auto" />

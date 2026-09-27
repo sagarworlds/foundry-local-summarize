@@ -6,6 +6,7 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Core.Verification;
 using FoundrySummarizer.Presentation.Services;
 
 namespace FoundrySummarizer.Presentation.ViewModels;
@@ -23,6 +24,7 @@ public partial class SummarizerViewModel : ObservableObject
 
     private readonly IDocumentIngestionPipeline _ingestion;
     private readonly IDocumentSummarizer _summarizer;
+    private readonly IFigureChecker _figureChecker;
     private readonly IDocumentPicker _documentPicker;
     private readonly IClipboardService _clipboard;
     private readonly SummarizationConfig _summarizationConfig;
@@ -52,6 +54,18 @@ public partial class SummarizerViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(OpenDocumentCommand))]
     private bool _isLoadingDocument;
 
+    /// <summary>
+    /// Whether the figures in the summary appear in the document, e.g. "⚠️ 1 of 9 figures does not appear…";
+    /// empty when there is no summary or it contains no figures.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasFigureCheck))]
+    private string _figureCheckText = string.Empty;
+
+    /// <summary>True when some figures in the summary were not found in the document.</summary>
+    [ObservableProperty]
+    private bool _hasUnverifiedFigures;
+
     [ObservableProperty]
     private string _status = "Open a document to get started.";
 
@@ -67,6 +81,9 @@ public partial class SummarizerViewModel : ObservableObject
     /// <summary>True when a summary has been generated for the loaded document.</summary>
     public bool HasSummary => !string.IsNullOrWhiteSpace(Summary);
 
+    /// <summary>True when there is a figure check to show.</summary>
+    public bool HasFigureCheck => FigureCheckText.Length > 0;
+
     /// <summary>Raised after a document is loaded, with its name and text. Its previous summary has been cleared.</summary>
     public event Action<string, string>? DocumentLoaded;
 
@@ -76,6 +93,7 @@ public partial class SummarizerViewModel : ObservableObject
     /// <param name="ingestion">Extracts text from documents.</param>
     /// <param name="promptyEngine">Supplies the summary styles.</param>
     /// <param name="summarizer">Writes summaries (splitting long documents into parts).</param>
+    /// <param name="figureChecker">Checks that the summary's figures come from the document.</param>
     /// <param name="documentPicker">Asks the user for a file.</param>
     /// <param name="clipboard">Copies the summary.</param>
     /// <param name="summarizationConfig">Used to tell the user when a document will be read in parts.</param>
@@ -85,6 +103,7 @@ public partial class SummarizerViewModel : ObservableObject
         IDocumentIngestionPipeline ingestion,
         IPromptyEngine promptyEngine,
         IDocumentSummarizer summarizer,
+        IFigureChecker figureChecker,
         IDocumentPicker documentPicker,
         IClipboardService clipboard,
         SummarizationConfig summarizationConfig,
@@ -111,6 +130,7 @@ public partial class SummarizerViewModel : ObservableObject
 
         _ingestion = ingestion;
         _summarizer = summarizer;
+        _figureChecker = figureChecker ?? throw new ArgumentNullException(nameof(figureChecker));
         _documentPicker = documentPicker;
         _clipboard = clipboard;
         _summarizationConfig = summarizationConfig;
@@ -151,6 +171,7 @@ public partial class SummarizerViewModel : ObservableObject
             DocumentText = result.ExtractedText;
             EstimatedTokens = result.EstimatedTokens;
             Summary = string.Empty;
+            ShowFigureCheck(FigureCheckResult.Empty);
 
             if (!HasDocument)
             {
@@ -214,6 +235,7 @@ public partial class SummarizerViewModel : ObservableObject
             }
 
             Summary = result.WasCutOff ? result.Summary.TrimEnd() + CutOffMarker : result.Summary;
+            ShowFigureCheck(_figureChecker.Check(result.Summary, DocumentText));
             completed = true;
             SetStatus(DescribeResult(result), isError: result.WasCutOff || result.CutOffNoteParts > 0);
             SummaryGenerated?.Invoke(Summary);
@@ -230,6 +252,20 @@ public partial class SummarizerViewModel : ObservableObject
         {
             if (!completed) Summary = previousSummary;
         }
+    }
+
+    /// <summary>
+    /// Shows whether the summary's figures appear in the document. The check runs on the original document, not on
+    /// the notes a long document's summary is written from, so a figure garbled in the notes is caught too.
+    /// </summary>
+    private void ShowFigureCheck(FigureCheckResult check)
+    {
+        HasUnverifiedFigures = !check.AllFound;
+        FigureCheckText = check.Checked.Count == 0
+            ? string.Empty
+            : check.AllFound
+                ? FigureCheckMessages.Confirmation(check, "summary")
+                : FigureCheckMessages.Warning(check, "summary");
     }
 
     /// <summary>What was produced, plus a warning for anything that stopped at the model's output limit.</summary>

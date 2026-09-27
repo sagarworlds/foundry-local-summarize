@@ -31,6 +31,7 @@ public class AppServicesTests
 
         Assert.IsType<MultiPartSummarizer>(provider.GetRequiredService<IDocumentSummarizer>());
         Assert.IsType<FollowUpQuestionGenerator>(provider.GetRequiredService<IFollowUpQuestionGenerator>());
+        Assert.IsType<FoundrySummarizer.Core.Verification.FigureChecker>(provider.GetRequiredService<FoundrySummarizer.Core.Verification.IFigureChecker>());
         Assert.IsType<DocumentIngestionPipeline>(provider.GetRequiredService<IDocumentIngestionPipeline>());
         Assert.IsType<OpenFileDocumentPicker>(provider.GetRequiredService<IDocumentPicker>());
         Assert.IsType<WpfClipboardService>(provider.GetRequiredService<IClipboardService>());

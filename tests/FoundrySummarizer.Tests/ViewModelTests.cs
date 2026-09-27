@@ -5,6 +5,7 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Core.Verification;
 using FoundrySummarizer.Presentation.Services;
 using FoundrySummarizer.Presentation.ViewModels;
 
@@ -135,7 +136,7 @@ public class SummarizerScreenTests
         IActivityTracker? activity = null) =>
         new(new DocumentIngestionPipeline(), new PromptyEngine(),
             summarizer ?? new Screen.Summarizer((r, _) => Task.FromResult(new SummarizationResult($"SUMMARY of {r.DocumentText.Length} chars", false, 1))),
-            new Screen.Picker(pickedFile), clipboard ?? new Screen.Clipboard(), new SummarizationConfig { MaxSinglePassTokens = 50 },
+            new FigureChecker(), new Screen.Picker(pickedFile), clipboard ?? new Screen.Clipboard(), new SummarizationConfig { MaxSinglePassTokens = 50 },
             readiness ?? new Screen.Readiness(), activity ?? new ActivityTracker());
 
     [Fact]
@@ -428,6 +429,44 @@ public class SummarizerScreenTests
         File.Delete(path);
     }
 
+    [Theory]
+    [InlineData("- Budget: $150,000, due 30 June 2026.", false, "✓ All 2 figures in the summary")]
+    [InlineData("- Budget: $150,000.", false, "✓ The 1 figure in the summary appears in the document.")]
+    [InlineData("- Budget: $165,000, due 30 June 2026.", true, "⚠️ 1 of 2 figures does not appear in the document: $165,000.")]
+    [InlineData("- Budget: $165,000, contingency 15%.", true, "⚠️ 2 of 2 figures do not appear in the document: $165,000, 15%.")]
+    [InlineData("- The budget was approved.", false, "")]
+    public async Task TheSummarysFigures_AreCheckedAgainstTheDocument(string summary, bool unverified, string expected)
+    {
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000, due 30 June 2026.");
+        var vm = Create(summarizer: new Screen.Summarizer((_, _) => Task.FromResult(new SummarizationResult(summary, false, 1))));
+        await vm.LoadDocumentAsync(path);
+
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+
+        Assert.StartsWith(expected, vm.FigureCheckText);
+        Assert.Equal(expected.Length > 0, vm.HasFigureCheck);
+        Assert.Equal(unverified, vm.HasUnverifiedFigures);
+        File.Delete(path);
+    }
+
+    [Fact]
+    public async Task ANewDocument_ClearsTheFigureCheck()
+    {
+        var first = Screen.TempFile("a.txt", "Budget is $150,000.");
+        var second = Screen.TempFile("b.txt", "Headcount is 12.");
+        var vm = Create(summarizer: new Screen.Summarizer((_, _) => Task.FromResult(new SummarizationResult("- Budget: $165,000", false, 1))));
+        await vm.LoadDocumentAsync(first);
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+        Assert.True(vm.HasUnverifiedFigures);
+
+        await vm.LoadDocumentAsync(second);
+
+        Assert.False(vm.HasFigureCheck);
+        Assert.False(vm.HasUnverifiedFigures);
+        File.Delete(first);
+        File.Delete(second);
+    }
+
     [Fact]
     public async Task SummarizingWithoutAStyle_AsksForOne()
     {
@@ -468,7 +507,7 @@ public class ChatScreenTests
         var answers = new Screen.Answers(answer ?? (_ => "It is $150,000 [P1]."));
         var questions = new Screen.Questions();
         var readiness = new Screen.Readiness();
-        var vm = new ChatViewModel(new DocumentChatAgent(answers), questions, readiness, new ActivityTracker());
+        var vm = new ChatViewModel(new DocumentChatAgent(answers), questions, new FigureChecker(), readiness, new ActivityTracker());
         return (vm, questions, readiness, answers);
     }
 
@@ -614,7 +653,7 @@ public class ChatScreenTests
     public async Task TheAnswerAppearsWhileItIsWritten()
     {
         var model = new TwoPieceModel();
-        var vm = new ChatViewModel(new DocumentChatAgent(model), new Screen.Questions(), new Screen.Readiness(), new ActivityTracker());
+        var vm = new ChatViewModel(new DocumentChatAgent(model), new Screen.Questions(), new FigureChecker(), new Screen.Readiness(), new ActivityTracker());
         vm.StartSession("minutes.txt", "Budget is $150,000.");
         vm.InputQuestion = "What is the budget?";
 
@@ -637,7 +676,7 @@ public class ChatScreenTests
     public async Task AnAnswerThatFailsPartway_IsReplacedByTheReason()
     {
         var model = new TwoPieceModel(new LocalModelUnavailableException("Model 'phi-4-mini' did not answer within 300s."));
-        var vm = new ChatViewModel(new DocumentChatAgent(model), new Screen.Questions(), new Screen.Readiness(), new ActivityTracker());
+        var vm = new ChatViewModel(new DocumentChatAgent(model), new Screen.Questions(), new FigureChecker(), new Screen.Readiness(), new ActivityTracker());
         vm.StartSession("minutes.txt", "Budget is $150,000.");
         vm.InputQuestion = "What is the budget?";
 
@@ -671,7 +710,7 @@ public class ChatScreenTests
     [Fact]
     public async Task AnAnswerCutOffAtTheLimit_IsFollowedByAHintToContinue()
     {
-        var vm = new ChatViewModel(new DocumentChatAgent(new CutOffModel()), new Screen.Questions(), new Screen.Readiness(), new ActivityTracker());
+        var vm = new ChatViewModel(new DocumentChatAgent(new CutOffModel()), new Screen.Questions(), new FigureChecker(), new Screen.Readiness(), new ActivityTracker());
         vm.StartSession("minutes.txt", "Budget is $150,000.");
         vm.InputQuestion = "What is the budget?";
 
@@ -684,10 +723,25 @@ public class ChatScreenTests
     }
 
     [Fact]
+    public async Task AnAnswerWithAFigureNotInTheDocument_IsFollowedByAWarning()
+    {
+        var (vm, _, _, _) = Create(_ => "The budget is $165,000 [P1].");
+        vm.StartSession("minutes.txt", "Budget is $150,000.");
+        vm.InputQuestion = "What is the budget?";
+
+        await vm.SendMessageCommand.ExecuteAsync(null);
+
+        Assert.Equal("The budget is $165,000 [P1].", vm.Messages[^2].Text);
+        Assert.Equal(ChatSender.Notice, vm.Messages[^1].Sender);
+        Assert.StartsWith("⚠️ 1 of 1 figures does not appear in the document: $165,000.", vm.Messages[^1].Text);
+        Assert.EndsWith("before relying on the answer.", vm.Messages[^1].Text);
+    }
+
+    [Fact]
     public async Task CancellingAQuestion_SaysSo_AndTheChatCanBeUsedAgain()
     {
         var readiness = new Screen.Readiness();
-        var vm = new ChatViewModel(new DocumentChatAgent(new Screen.SilentModel()), new Screen.Questions(), readiness, new ActivityTracker());
+        var vm = new ChatViewModel(new DocumentChatAgent(new Screen.SilentModel()), new Screen.Questions(), new FigureChecker(), readiness, new ActivityTracker());
         vm.StartSession("minutes.txt", "Budget is $150,000.");
         vm.InputQuestion = "What is the budget?";
 
@@ -1009,8 +1063,8 @@ public class MainScreenTests
         var activity = new ActivityTracker();
         var summarizer = new SummarizerViewModel(new DocumentIngestionPipeline(), new PromptyEngine(),
             new Screen.Summarizer((_, _) => Task.FromResult(new SummarizationResult("SUMMARY", false, 1))),
-            new Screen.Picker(null), new Screen.Clipboard(), new SummarizationConfig(), readiness, activity);
-        var chat = new ChatViewModel(new DocumentChatAgent(new Screen.Answers(_ => "answer")), new Screen.Questions(), readiness, activity);
+            new FigureChecker(), new Screen.Picker(null), new Screen.Clipboard(), new SummarizationConfig(), readiness, activity);
+        var chat = new ChatViewModel(new DocumentChatAgent(new Screen.Answers(_ => "answer")), new Screen.Questions(), new FigureChecker(), readiness, activity);
 
         var options = new FoundryOptions();
         var picker = new ModelPickerViewModel(new FoundryLocalChatClient(options, new FoundryLocalService(options,

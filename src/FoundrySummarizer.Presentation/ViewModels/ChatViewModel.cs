@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using FoundrySummarizer.Core.Chat;
 using FoundrySummarizer.Core.Routing;
+using FoundrySummarizer.Core.Verification;
 using FoundrySummarizer.Presentation.Services;
 
 namespace FoundrySummarizer.Presentation.ViewModels;
@@ -60,6 +61,7 @@ public partial class ChatViewModel : ObservableObject
 {
     private readonly DocumentChatAgent _agent;
     private readonly IFollowUpQuestionGenerator _questionGenerator;
+    private readonly IFigureChecker _figureChecker;
     private readonly IModelReadiness _modelReadiness;
     private readonly IActivityTracker _activity;
 
@@ -101,10 +103,13 @@ public partial class ChatViewModel : ObservableObject
 
     /// <param name="agent">Answers questions about the document.</param>
     /// <param name="questionGenerator">Writes the suggested questions for each document.</param>
+    /// <param name="figureChecker">Checks that the figures in each answer come from the document.</param>
     /// <param name="modelReadiness">Questions are disabled until a model is loaded.</param>
     /// <param name="activity">Marks running model work, so the model is not switched meanwhile.</param>
-    public ChatViewModel(DocumentChatAgent agent, IFollowUpQuestionGenerator questionGenerator, IModelReadiness modelReadiness, IActivityTracker activity)
+    public ChatViewModel(DocumentChatAgent agent, IFollowUpQuestionGenerator questionGenerator, IFigureChecker figureChecker,
+        IModelReadiness modelReadiness, IActivityTracker activity)
     {
+        _figureChecker = figureChecker ?? throw new ArgumentNullException(nameof(figureChecker));
         _agent = agent ?? throw new ArgumentNullException(nameof(agent));
         _questionGenerator = questionGenerator ?? throw new ArgumentNullException(nameof(questionGenerator));
         _modelReadiness = modelReadiness;
@@ -245,6 +250,12 @@ public partial class ChatViewModel : ObservableObject
 
             reply.Text = string.IsNullOrWhiteSpace(answer.Text) ? "(The model returned an empty answer. Try rephrasing the question.)" : answer.Text.Trim();
             if (!Messages.Contains(reply)) Messages.Add(reply);
+            var figures = _figureChecker.Check(answer.Text, _documentText);
+            if (!figures.AllFound)
+            {
+                Messages.Add(Notice(FigureCheckMessages.Warning(figures, "answer")));
+            }
+
             if (answer.WasCutOff)
             {
                 // The agent keeps the partial answer in the conversation, so the model can pick up where it stopped.
