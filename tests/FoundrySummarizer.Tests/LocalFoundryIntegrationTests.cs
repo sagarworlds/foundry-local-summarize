@@ -51,6 +51,18 @@ public class LocalFoundryIntegrationTests
     }
 
     [LocalFoundryFact]
+    public async Task ReadsTheLoadedModelsContextWindow_FromItsFiles()
+    {
+        // If this fails, summaries fall back to the 4K-sized budget: set Foundry:Local:ContextWindows for the model.
+        using var client = new FoundryLocalChatClient(Options());
+        Assert.True((await client.LoadActiveModelAsync()).IsAvailable);
+
+        var window = await client.GetContextTokensAsync();
+
+        Assert.True(window is > 1000, $"No context window found for '{client.ActiveModelId}' in Foundry Local's model cache.");
+    }
+
+    [LocalFoundryFact]
     public async Task AnswersAQuestion_WithoutReasoningText()
     {
         using var client = new FoundryLocalChatClient(Options());

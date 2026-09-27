@@ -27,7 +27,6 @@ public partial class SummarizerViewModel : ObservableObject
     private readonly IFigureChecker _figureChecker;
     private readonly IDocumentPicker _documentPicker;
     private readonly IClipboardService _clipboard;
-    private readonly SummarizationConfig _summarizationConfig;
     private readonly IModelReadiness _modelReadiness;
     private readonly IActivityTracker _activity;
 
@@ -96,7 +95,6 @@ public partial class SummarizerViewModel : ObservableObject
     /// <param name="figureChecker">Checks that the summary's figures come from the document.</param>
     /// <param name="documentPicker">Asks the user for a file.</param>
     /// <param name="clipboard">Copies the summary.</param>
-    /// <param name="summarizationConfig">Used to tell the user when a document will be read in parts.</param>
     /// <param name="modelReadiness">Summarizing is disabled until a model is loaded.</param>
     /// <param name="activity">Marks a running summary, so the model is not switched meanwhile.</param>
     public SummarizerViewModel(
@@ -106,7 +104,6 @@ public partial class SummarizerViewModel : ObservableObject
         IFigureChecker figureChecker,
         IDocumentPicker documentPicker,
         IClipboardService clipboard,
-        SummarizationConfig summarizationConfig,
         IModelReadiness modelReadiness,
         IActivityTracker activity)
     {
@@ -133,7 +130,6 @@ public partial class SummarizerViewModel : ObservableObject
         _figureChecker = figureChecker ?? throw new ArgumentNullException(nameof(figureChecker));
         _documentPicker = documentPicker;
         _clipboard = clipboard;
-        _summarizationConfig = summarizationConfig;
 
         Personas = new ObservableCollection<PromptyDocument>(promptyEngine.AvailablePersonas);
         SelectedPersona = Personas.FirstOrDefault();
@@ -179,7 +175,9 @@ public partial class SummarizerViewModel : ObservableObject
                 return;
             }
 
-            var length = result.EstimatedTokens > _summarizationConfig.MaxSinglePassTokens
+            // The limit depends on the model's context window, so the hint matches what summarizing will do.
+            var singlePassLimit = SelectedPersona is null ? int.MaxValue : await _summarizer.GetSinglePassTokenLimitAsync(SelectedPersona);
+            var length = result.EstimatedTokens > singlePassLimit
                 ? $"~{result.EstimatedTokens:N0} tokens, will be read in parts"
                 : $"~{result.EstimatedTokens:N0} tokens";
             SetStatus($"Loaded {result.FileName} ({length}). Choose a summary style and click Summarize.");

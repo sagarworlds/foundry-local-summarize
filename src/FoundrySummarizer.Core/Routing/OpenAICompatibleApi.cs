@@ -59,4 +59,8 @@ public sealed class OpenAICompatibleApi : IModelManagementApi
 
     /// <inheritdoc />
     public Task<string?> UnloadAsync(string name, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+
+    /// <inheritdoc />
+    /// <remarks>A generic server does not say where its models are; set <c>Foundry:Local:ContextWindows</c> instead.</remarks>
+    public Task<string?> GetModelCacheDirectoryAsync(CancellationToken cancellationToken) => Task.FromResult<string?>(null);
 }

@@ -37,4 +37,12 @@ public interface IDocumentSummarizer
         SummarizationRequest request,
         IProgress<SummarizationProgress>? progress = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The longest document, in estimated tokens, summarized in one pass with the current model and
+    /// <paramref name="persona"/>; longer documents are read in parts.
+    /// </summary>
+    /// <param name="persona">The summary style (its length limit takes room from the model's context window).</param>
+    /// <param name="cancellationToken">Cancels the lookup.</param>
+    Task<int> GetSinglePassTokenLimitAsync(PromptyDocument persona, CancellationToken cancellationToken = default);
 }

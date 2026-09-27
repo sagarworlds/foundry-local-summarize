@@ -55,6 +55,12 @@ internal static class Screen
 
     public sealed class Summarizer(Func<SummarizationRequest, CancellationToken, Task<SummarizationResult>> summarize) : IDocumentSummarizer
     {
+        /// <summary>The single-pass limit the screen is told; documents longer than this "will be read in parts".</summary>
+        public int SinglePassLimit { get; set; } = 50;
+
+        public Task<int> GetSinglePassTokenLimitAsync(PromptyDocument persona, CancellationToken cancellationToken = default) =>
+            Task.FromResult(SinglePassLimit);
+
         /// <summary>Called with the progress receiver, so a test can report drafts while the summary is "written".</summary>
         public Action<IProgress<SummarizationProgress>?>? OnStart { get; set; }
 
@@ -136,7 +142,7 @@ public class SummarizerScreenTests
         IActivityTracker? activity = null) =>
         new(new DocumentIngestionPipeline(), new PromptyEngine(),
             summarizer ?? new Screen.Summarizer((r, _) => Task.FromResult(new SummarizationResult($"SUMMARY of {r.DocumentText.Length} chars", false, 1))),
-            new FigureChecker(), new Screen.Picker(pickedFile), clipboard ?? new Screen.Clipboard(), new SummarizationConfig { MaxSinglePassTokens = 50 },
+            new FigureChecker(), new Screen.Picker(pickedFile), clipboard ?? new Screen.Clipboard(),
             readiness ?? new Screen.Readiness(), activity ?? new ActivityTracker());
 
     [Fact]
@@ -166,6 +172,20 @@ public class SummarizerScreenTests
         await vm.LoadDocumentAsync(path);
 
         Assert.Contains("will be read in parts", vm.Status);
+        File.Delete(path);
+    }
+
+    [Fact]
+    public async Task ADocumentThatFitsTheModel_IsNotSaidToBeReadInParts()
+    {
+        // The limit comes from the summarizer (sized to the model's context window), not from a fixed setting.
+        var path = Screen.TempFile("long.txt", string.Join(" ", Enumerable.Repeat("word", 400)));
+        var vm = Create(summarizer: new Screen.Summarizer((_, _) => Task.FromResult(new SummarizationResult("S", false, 1))) { SinglePassLimit = 8000 });
+
+        await vm.LoadDocumentAsync(path);
+
+        Assert.DoesNotContain("in parts", vm.Status);
+        Assert.StartsWith("Loaded", vm.Status);
         File.Delete(path);
     }
 
@@ -1063,7 +1083,7 @@ public class MainScreenTests
         var activity = new ActivityTracker();
         var summarizer = new SummarizerViewModel(new DocumentIngestionPipeline(), new PromptyEngine(),
             new Screen.Summarizer((_, _) => Task.FromResult(new SummarizationResult("SUMMARY", false, 1))),
-            new FigureChecker(), new Screen.Picker(null), new Screen.Clipboard(), new SummarizationConfig(), readiness, activity);
+            new FigureChecker(), new Screen.Picker(null), new Screen.Clipboard(), readiness, activity);
         var chat = new ChatViewModel(new DocumentChatAgent(new Screen.Answers(_ => "answer")), new Screen.Questions(), new FigureChecker(), readiness, activity);
 
         var options = new FoundryOptions();

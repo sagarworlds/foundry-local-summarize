@@ -64,6 +64,11 @@ public sealed class FoundryServerApi : IModelManagementApi
     }
 
     /// <inheritdoc />
+    /// <remarks>Foundry Local 1.x+ reports it as <c>modelCachePath</c> in <c>/status</c>.</remarks>
+    public Task<string?> GetModelCacheDirectoryAsync(CancellationToken cancellationToken) =>
+        LocalHttp.GetJsonStringAsync(_http, _serviceBase, "/status", "modelCachePath", ListTimeout, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<ModelIdListing> ListLoadedAsync(CancellationToken cancellationToken)
     {
         var result = await LocalHttp.GetAsync(_http, _serviceBase, "/models/loaded", ListTimeout, cancellationToken);

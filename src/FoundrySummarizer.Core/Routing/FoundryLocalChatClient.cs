@@ -28,7 +28,7 @@ public record ModelSwitchResult(LocalModelStatus Status, string? UnloadProblem);
 /// canned text: when no model can answer it throws <see cref="LocalModelUnavailableException"/>, so the user
 /// sees the reason instead of a summary that did not come from their document.
 /// </summary>
-public sealed class FoundryLocalChatClient : IChatClient
+public sealed class FoundryLocalChatClient : IChatClient, IModelContextWindow
 {
     private readonly FoundryOptions _options;
     private readonly FoundryLocalService _localService;
@@ -88,6 +88,11 @@ public sealed class FoundryLocalChatClient : IChatClient
     /// <summary>Loads the active model into memory now, so the first summary does not wait for it.</summary>
     public Task<LocalModelStatus> LoadActiveModelAsync(CancellationToken cancellationToken = default) =>
         _localService.CheckAsync(ensureModelLoaded: true, cancellationToken);
+
+    /// <inheritdoc />
+    /// <remarks>See <see cref="FoundryLocalService.GetActiveContextTokensAsync"/>.</remarks>
+    public Task<int?> GetContextTokensAsync(CancellationToken cancellationToken = default) =>
+        _localService.GetActiveContextTokensAsync(cancellationToken);
 
     /// <summary>Endpoint, model and (when unreachable) the reason, for status displays. Does not load a model.</summary>
     public Task<LocalModelStatus> GetStatusAsync(CancellationToken cancellationToken = default) =>

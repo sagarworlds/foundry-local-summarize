@@ -31,24 +31,46 @@ public class MultiPartSummarizer : IDocumentSummarizer
     private readonly IChatClient _chatClient;
     private readonly IPromptyEngine _promptyEngine;
     private readonly SummarizationConfig _config;
-    private readonly SemanticChunker _chunker;
 
-    // Re-reads a part whose notes hit the output limit, in pieces half the size.
-    private readonly SemanticChunker _pieceChunker;
+    /// <summary>The sizes one summary works with, for the model in use.</summary>
+    /// <param name="SinglePassTokens">Longest text summarized (or condensed) in one call.</param>
+    /// <param name="Parts">Splits a longer text into parts.</param>
+    /// <param name="Pieces">Re-reads a part whose notes hit the output limit, in pieces half the size.</param>
+    private sealed record Budget(int SinglePassTokens, SemanticChunker Parts, SemanticChunker Pieces);
 
-    /// <param name="chatClient">Model client (normally <see cref="Routing.FoundryLocalChatClient"/>).</param>
+    /// <param name="chatClient">
+    /// Model client (normally <see cref="Routing.FoundryLocalChatClient"/>). When it offers an
+    /// <see cref="IModelContextWindow"/>, documents are read in one pass whenever they fit the model's window.
+    /// </param>
     /// <param name="promptyEngine">Renders the persona prompt for the final summary.</param>
-    /// <param name="config">Token budgets; defaults are sized for 4K-context local models.</param>
+    /// <param name="config">Token budgets; the defaults suit 4K-context local models when the window is unknown.</param>
     public MultiPartSummarizer(IChatClient chatClient, IPromptyEngine promptyEngine, SummarizationConfig? config = null)
     {
         _chatClient = chatClient ?? throw new ArgumentNullException(nameof(chatClient));
         _promptyEngine = promptyEngine ?? throw new ArgumentNullException(nameof(promptyEngine));
         _config = config ?? new SummarizationConfig();
+    }
 
-        // A part must be smaller than the single-pass budget, otherwise splitting could never make progress.
-        int partTokens = Math.Min(_config.MapChunkTokens, Math.Max(50, _config.MaxSinglePassTokens / 2));
-        _chunker = new SemanticChunker(partTokens, _config.MapChunkOverlapTokens);
-        _pieceChunker = new SemanticChunker(Math.Max(50, partTokens / 2), overlapTokens: 0);
+    /// <inheritdoc />
+    public async Task<int> GetSinglePassTokenLimitAsync(PromptyDocument persona, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(persona);
+        var window = _chatClient.GetService<IModelContextWindow>();
+        int? contextTokens = window is null ? null : await window.GetContextTokensAsync(cancellationToken);
+
+        var emptyPrompt = _promptyEngine.RenderChatMessages(persona, new Dictionary<string, string> { ["documentText"] = string.Empty });
+        var promptTokens = emptyPrompt.Sum(message => SemanticChunker.EstimateTokens(message.Text ?? string.Empty));
+        return SummaryBudget.SinglePassTokens(_config, contextTokens, persona.ModelConfig.MaxTokens, promptTokens);
+    }
+
+    private async Task<Budget> GetBudgetAsync(PromptyDocument persona, CancellationToken cancellationToken)
+    {
+        var singlePass = await GetSinglePassTokenLimitAsync(persona, cancellationToken);
+        var partTokens = SummaryBudget.PartTokens(_config, singlePass);
+        return new Budget(
+            singlePass,
+            new SemanticChunker(partTokens, _config.MapChunkOverlapTokens),
+            new SemanticChunker(Math.Max(50, partTokens / 2), overlapTokens: 0));
     }
 
     /// <inheritdoc />
@@ -69,9 +91,10 @@ public class MultiPartSummarizer : IDocumentSummarizer
         int cutOffNoteParts = 0;
         bool usedMultiPart = false;
 
-        if (SemanticChunker.EstimateTokens(sourceText) > _config.MaxSinglePassTokens)
+        var budget = await GetBudgetAsync(request.Persona, cancellationToken);
+        if (SemanticChunker.EstimateTokens(sourceText) > budget.SinglePassTokens)
         {
-            var notes = await CondenseAsync(sourceText, request.Persona, progress, cancellationToken);
+            var notes = await CondenseAsync(sourceText, request.Persona, budget, progress, cancellationToken);
             sourceText = $"(Faithful notes taken from all {notes.PartCount} parts of a long document, in order.)\n\n{notes.Text}";
             partCount = notes.PartCount;
             cutOffNoteParts = notes.CutOffParts;
@@ -100,6 +123,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
     private async Task<(string Text, int PartCount, int CutOffParts)> CondenseAsync(
         string text,
         PromptyDocument persona,
+        Budget budget,
         IProgress<SummarizationProgress>? progress,
         CancellationToken cancellationToken)
     {
@@ -109,7 +133,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
 
         for (int round = 1; round <= rounds; round++)
         {
-            var parts = _chunker.ChunkText(text, $"pass-{round}");
+            var parts = budget.Parts.ChunkText(text, $"pass-{round}");
             if (round == 1) firstPassParts = parts.Count;
 
             var notes = new List<string>(parts.Count);
@@ -120,7 +144,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
                     ? $"Reading part {i + 1} of {parts.Count}..."
                     : $"Condensing notes (pass {round}), part {i + 1} of {parts.Count}..."));
 
-                var partNotes = await NotesForPartAsync(parts[i].Text, i + 1, parts.Count, persona, progress, cancellationToken);
+                var partNotes = await NotesForPartAsync(parts[i].Text, i + 1, parts.Count, persona, budget, progress, cancellationToken);
                 if (partNotes.CutOff) cutOffParts++;
                 if (partNotes.Text.Length > 0)
                 {
@@ -129,7 +153,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
             }
 
             text = string.Join("\n\n", notes);
-            if (SemanticChunker.EstimateTokens(text) <= _config.MaxSinglePassTokens)
+            if (SemanticChunker.EstimateTokens(text) <= budget.SinglePassTokens)
             {
                 break;
             }
@@ -149,13 +173,14 @@ public class MultiPartSummarizer : IDocumentSummarizer
         int partNumber,
         int partTotal,
         PromptyDocument persona,
+        Budget budget,
         IProgress<SummarizationProgress>? progress,
         CancellationToken cancellationToken)
     {
         var notes = await TakeNotesAsync(partText, partNumber, partTotal, persona, cancellationToken);
         if (!notes.CutOff) return notes;
 
-        var pieces = _pieceChunker.ChunkText(partText, $"part-{partNumber}");
+        var pieces = budget.Pieces.ChunkText(partText, $"part-{partNumber}");
         if (pieces.Count < 2) return notes;
 
         var pieceNotes = new List<string>(pieces.Count);

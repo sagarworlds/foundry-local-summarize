@@ -17,9 +17,10 @@ public class ConfigurationTests
               "ModelId": "llama3.2:3b",
               "AutoDiscover": false,
               "TimeoutSeconds": 15,
-              "PreferredModels": [ "phi-4-mini" ]
+              "PreferredModels": [ "phi-4-mini" ],
+              "ContextWindows": [ { "Model": "llama3.2:3b", "Tokens": 32768 } ]
             },
-            "Summarization": { "MaxSinglePassTokens": 6000 },
+            "Summarization": { "MaxSinglePassTokens": 6000, "SinglePassTokenCap": 12000 },
             "Chat": { "MaxHistoryTurns": 2 }
           }
         }
@@ -35,6 +36,9 @@ public class ConfigurationTests
         Assert.Equal(15, options.Local.TimeoutSeconds);
         Assert.Equal(new[] { "phi-4-mini" }, options.Local.GetPreferredModels());
         Assert.Equal(6000, options.Summarization.MaxSinglePassTokens);
+        Assert.Equal(12000, options.Summarization.SinglePassTokenCap);
+        var window = Assert.Single(options.Local.ContextWindows);                 // names with ':' survive binding
+        Assert.Equal(("llama3.2:3b", 32768), (window.Model, window.Tokens));
         Assert.Equal(2, options.Chat.MaxHistoryTurns);
 
         // With discovery off, the configured endpoint is used as-is.
