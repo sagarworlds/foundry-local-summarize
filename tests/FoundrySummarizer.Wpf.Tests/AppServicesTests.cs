@@ -64,6 +64,8 @@ public class AppServicesTests
         Assert.Equal("phi-4-mini", options.Local.PreferredModels[0]);
         Assert.True(options.Local.TimeoutSeconds > 0);
         Assert.True(options.Summarization.MaxSinglePassTokens > options.Summarization.MapChunkTokens);
+        Assert.True(options.Summarization.SinglePassTokenCap >= options.Summarization.MaxSinglePassTokens);
+        Assert.Empty(options.Local.ContextWindows);                                    // read from the model's files by default
         Assert.True(options.Chat.MaxPassageTokens > 0);
     }
 

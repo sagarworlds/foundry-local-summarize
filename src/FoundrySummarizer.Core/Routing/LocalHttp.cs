@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Text.Json;
 
 namespace FoundrySummarizer.Core.Routing;
 
@@ -43,6 +44,33 @@ public static class LocalHttp
         catch (HttpRequestException ex)
         {
             return new HttpGetResult(null, string.Empty, $"{url} failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>GETs <paramref name="path"/> and reads one string property of the JSON object it returns.</summary>
+    /// <param name="http">Client with no timeout of its own; <paramref name="timeout"/> applies.</param>
+    /// <param name="serviceBase">Scheme and authority of the server.</param>
+    /// <param name="path">Absolute path, e.g. "/status".</param>
+    /// <param name="property">Property name, matched case-insensitively (servers differ in casing).</param>
+    /// <param name="timeout">Maximum wait.</param>
+    /// <param name="cancellationToken">Caller cancellation.</param>
+    /// <returns>The value, or null when the request fails, the body is not a JSON object, or the property is missing.</returns>
+    public static async Task<string?> GetJsonStringAsync(HttpClient http, Uri serviceBase, string path, string property, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var result = await GetAsync(http, serviceBase, path, timeout, cancellationToken);
+        if (!result.IsSuccess) return null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(result.Body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
+            var match = doc.RootElement.EnumerateObject().FirstOrDefault(p => p.Name.Equals(property, StringComparison.OrdinalIgnoreCase));
+            return match.Value.ValueKind == JsonValueKind.String ? match.Value.GetString() : null;
+        }
+        catch (JsonException ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[LocalHttp] {path} returned unreadable JSON: {ex.Message}");
+            return null;
         }
     }
 

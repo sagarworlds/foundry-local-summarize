@@ -40,6 +40,10 @@ public interface IModelManagementApi
     /// <returns>Null on success; otherwise what went wrong and how to fix it.</returns>
     Task<string?> LoadAsync(string name, CancellationToken cancellationToken);
 
+    /// <summary>The folder the server keeps downloaded models in, used to read a model's context window.</summary>
+    /// <returns>The folder, or null when the server does not say (or keeps no models on this machine).</returns>
+    Task<string?> GetModelCacheDirectoryAsync(CancellationToken cancellationToken);
+
     /// <summary>Releases <paramref name="name"/> from memory.</summary>
     /// <returns>Null on success or when it was not loaded; otherwise why unloading failed.</returns>
     Task<string?> UnloadAsync(string name, CancellationToken cancellationToken);

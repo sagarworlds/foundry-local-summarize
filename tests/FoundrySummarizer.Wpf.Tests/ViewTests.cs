@@ -60,6 +60,8 @@ public class ViewTests
 
     private sealed class Summarizer : IDocumentSummarizer
     {
+        public Task<int> GetSinglePassTokenLimitAsync(PromptyDocument persona, CancellationToken cancellationToken = default) => Task.FromResult(2500);
+
         public Task<SummarizationResult> SummarizeAsync(SummarizationRequest request, IProgress<SummarizationProgress>? progress = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new SummarizationResult("- Budget: $150,000", false, 1));
     }
@@ -90,7 +92,7 @@ public class ViewTests
         var activity = new ActivityTracker();
         var picker = new ModelPickerViewModel(new FoundryLocalChatClient(options), new Settings(), activity, TimeSpan.FromHours(1));
         var summarizer = new SummarizerViewModel(new DocumentIngestionPipeline(), new PromptyEngine(), new Summarizer(), new FigureChecker(),
-            new NoPicker(), new NoClipboard(), new SummarizationConfig(), picker, activity);
+            new NoPicker(), new NoClipboard(), picker, activity);
         var chat = new ChatViewModel(new DocumentChatAgent(new Answers()), new Questions(), new FigureChecker(), picker, activity);
         return new MainViewModel(picker, summarizer, chat);
     }

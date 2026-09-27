@@ -1,5 +1,15 @@
 namespace FoundrySummarizer.Core.Routing;
 
+/// <summary>The context window of one model, set in configuration.</summary>
+public class ModelContextWindow
+{
+    /// <summary>Model alias or id, in any case, with or without a version (e.g. "phi-4-mini", "llama3.2:3b").</summary>
+    public string Model { get; set; } = string.Empty;
+
+    /// <summary>Context window in tokens (prompt and output together); zero or less is ignored.</summary>
+    public int Tokens { get; set; }
+}
+
 public class LocalFoundryConfig
 {
     /// <summary>
@@ -47,6 +57,17 @@ public class LocalFoundryConfig
     /// </summary>
     public string[] PreferredModels { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Context windows of particular models, e.g. <c>[ { "Model": "phi-4-mini", "Tokens": 16384 } ]</c>. Each overrides
+    /// the window read from the model's own files, and supplies it for servers that do not report one (such as Ollama).
+    /// Summaries use it to read documents that fit the window in one pass instead of in parts.
+    /// </summary>
+    /// <remarks>
+    /// A list rather than a dictionary: configuration keys cannot contain ':', which model names such as
+    /// "llama3.2:3b" or "Phi-4-mini-instruct-generic-gpu:5" do. An array also replaces, rather than extends, the default.
+    /// </remarks>
+    public ModelContextWindow[] ContextWindows { get; set; } = Array.Empty<ModelContextWindow>();
+
     /// <summary>Returns <see cref="PreferredModels"/> if configured, otherwise the built-in preference order.</summary>
     public IReadOnlyList<string> GetPreferredModels() =>
         PreferredModels is { Length: > 0 } ? PreferredModels : LocalModelSelector.DefaultPreferences;
@@ -58,8 +79,18 @@ public class LocalFoundryConfig
 /// </summary>
 public class SummarizationConfig
 {
-    /// <summary>Documents up to this size are summarized in a single model call.</summary>
+    /// <summary>
+    /// Documents up to this size are summarized in a single model call when the model's context window is not known.
+    /// Sized for 4K-context models.
+    /// </summary>
     public int MaxSinglePassTokens { get; set; } = 2500;
+
+    /// <summary>
+    /// When the model's context window is known, a document is summarized in a single call if it fits the window
+    /// (after the prompt and room for the summary), up to this size. Longer documents are still read in parts,
+    /// because small models lose track of details in very long prompts.
+    /// </summary>
+    public int SinglePassTokenCap { get; set; } = 8000;
 
     /// <summary>Size of each part when a document is too long for a single pass.</summary>
     public int MapChunkTokens { get; set; } = 1200;

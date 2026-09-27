@@ -68,6 +68,9 @@ public sealed class FoundryLocalService : IDisposable
     private string? _clientKey;
     private string? _userSelectedModelId;
 
+    // Context windows read from model files, by chat model id; reading them walks the model cache, so once is enough.
+    private readonly Dictionary<string, int?> _contextTokens = new(StringComparer.OrdinalIgnoreCase);
+
     // Speech, embedding and image models share the listing but cannot answer chat requests.
     private static readonly string[] NonChatMarkers = { "whisper", "embed", "tts", "vision-encoder", "asr", "speech" };
 
@@ -243,6 +246,45 @@ public sealed class FoundryLocalService : IDisposable
             return api.IsLoaded(listing.Ids, _activeModelId)
                 ? new ActiveModelState(ActiveModelStateKind.Loaded, null)
                 : new ActiveModelState(ActiveModelStateKind.NotLoaded, DescribeLoaded(api, listing.Ids));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The active model's context window in tokens: the <c>Foundry:Local:ContextWindows</c> setting for it if there is
+    /// one, otherwise the window in the model's own files (Foundry Local's model cache), otherwise null.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the lookup.</param>
+    public async Task<int?> GetActiveContextTokensAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var (api, _) = await ConnectAsync(cancellationToken);
+            var name = _activeModelId;
+            var chatId = name;
+            if (api is not null)
+            {
+                var loaded = await api.ListLoadedAsync(cancellationToken);
+                chatId = api.ChatModelId(loaded.Ids ?? Array.Empty<string>(), name);
+            }
+
+            foreach (var setting in _options.Local.ContextWindows)
+            {
+                if (setting.Tokens > 0 && (SameModel(setting.Model, name) || SameModel(setting.Model, chatId))) return setting.Tokens;
+            }
+
+            if (api is null) return null;
+            if (!_contextTokens.TryGetValue(chatId, out var fromFiles))
+            {
+                fromFiles = ModelContextReader.FindContextTokens(await api.GetModelCacheDirectoryAsync(cancellationToken), chatId);
+                _contextTokens[chatId] = fromFiles;
+            }
+
+            return fromFiles;
         }
         finally
         {

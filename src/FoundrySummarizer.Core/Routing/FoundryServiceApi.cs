@@ -103,6 +103,11 @@ public sealed class FoundryServiceApi : IModelManagementApi
             : $"Foundry Local could not unload '{id}' ({result.Describe()}); it stays in memory until its idle timeout.";
     }
 
+    /// <inheritdoc />
+    /// <remarks>Foundry Local 0.x reports it as <c>modelDirPath</c> in <c>/openai/status</c>.</remarks>
+    public Task<string?> GetModelCacheDirectoryAsync(CancellationToken cancellationToken) =>
+        LocalHttp.GetJsonStringAsync(_http, _serviceBase, "/openai/status", "modelDirPath", ListTimeout, cancellationToken);
+
     private async Task<ModelIdListing> ListAsync(string route, CancellationToken cancellationToken)
     {
         var result = await LocalHttp.GetAsync(_http, _serviceBase, route, ListTimeout, cancellationToken);

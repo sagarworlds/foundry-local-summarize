@@ -29,7 +29,7 @@ the user's machine; no content is sent to a cloud service.
 
 - **Document summaries**: reads Word (`.docx`), PowerPoint (`.pptx`), PDF (`.pdf`) and text (`.txt`, `.md`) files.
 - **Three summary styles**: Executive Bullets, Action-Item Extractor and Legal Compliance Check, defined as Prompty templates.
-- **Long-document support**: documents that exceed the model's context window are read in parts and summarized from faithful per-part notes, so no content is silently truncated.
+- **Sized to the model**: a document that fits the loaded model's context window is summarized in one call; longer documents are read in parts and summarized from faithful per-part notes, so no content is silently truncated. The window is read from the model's own files in Foundry Local's model cache.
 - **Grounded follow-up chat**: answers are drawn only from the document, cite the passages used (`[P1]`, `[P2]`, …), and state "The document does not say." when the answer is not present.
 - **Live output**: summaries and answers appear as the model writes them, instead of after the whole text is finished.
 - **Figure check**: every amount, percentage, date, period and significant number in a summary or answer is checked against the document, with no extra model call. Figures written differently still match (`$1.5 million` = `$1,500,000`, `June 30, 2026` = `30/06/2026`); figures the document does not contain, whether invented or calculated by the model, are listed so the reader can check them.
@@ -155,7 +155,9 @@ Settings are read from `appsettings.json` in the installation folder (when runni
 | `Foundry:Local:Endpoint` | `http://127.0.0.1:63715/v1` | Endpoint used when discovery is disabled or finds no service. |
 | `Foundry:Local:TimeoutSeconds` | `300` | Maximum time to wait for a model response. |
 | `Foundry:Local:ModelLoadTimeoutSeconds` | `300` | Maximum time to wait for a model to load. |
-| `Foundry:Summarization:MaxSinglePassTokens` | `2500` | Documents longer than this are read in parts. Increase for large-context models. |
+| `Foundry:Local:ContextWindows` | none | Context window per model, e.g. `[ { "Model": "phi-4-mini", "Tokens": 16384 } ]`. Normally read from the model's files; set it to override that, or for servers that do not report it (such as Ollama). |
+| `Foundry:Summarization:SinglePassTokenCap` | `8000` | Longest document summarized in one call when the model's context window is known and the document fits it. |
+| `Foundry:Summarization:MaxSinglePassTokens` | `2500` | Longest document summarized in one call when the context window is not known. |
 | `Foundry:Chat:MaxPassageTokens` | `1500` | Amount of document text sent with each question. |
 | `Foundry:Chat:MaxHistoryTurns` | `4` | Number of earlier question-and-answer pairs retained. |
 
@@ -174,6 +176,8 @@ flowchart TB
         Extract -- document text --> Chat["DocumentChatAgent<br/>BM25 passage retrieval"]
         Summarizer -- summary --> Chat
         Summarizer --> Questions["FollowUpQuestionGenerator<br/>suggested questions from the summary"]
+        Summarizer -. summary .-> Check["FigureChecker<br/>figures vs the document"]
+        Chat -. answers .-> Check
         Summarizer --> Client["FoundryLocalChatClient"]
         Chat --> Client
         Questions --> Client
@@ -184,28 +188,32 @@ flowchart TB
 
     CLI["foundry CLI"]
     Host["Foundry Local"]
+    Files["Model files<br/>genai_config.json"]
 
     Client -- "chat completions<br/>/v1/chat/completions" --> Host
     Api -- "list · load · unload models" --> Host
     Service -- "status · start" --> CLI
     Api -. "model list (1.x+)" .-> CLI
+    Service -. "context window" .-> Files
     CLI --> Host
 ```
 
 Summaries, answers and suggested questions are sent by `FoundryLocalChatClient` directly to Foundry Local's
-OpenAI-compatible endpoint. Before each request, `FoundryLocalService` makes sure the service is running and the selected
-model is loaded; model listing, loading and unloading go through the `IModelManagementApi` implementation that matches
-the detected Foundry Local version.
+OpenAI-compatible endpoint and streamed back as they are written. Before each request, `FoundryLocalService` makes sure
+the service is running and the selected model is loaded; model listing, loading and unloading go through the
+`IModelManagementApi` implementation that matches the detected Foundry Local version. The model's context window, read
+from its files in Foundry Local's model cache, decides whether a document is summarized in one call or in parts.
 
 | Component | Responsibility |
 |---|---|
 | `DocumentIngestionPipeline` | Extracts plain text from supported file formats. |
-| `MultiPartSummarizer` | Summarizes in a single request, or reads long documents in parts and summarizes the combined notes. |
+| `MultiPartSummarizer` | Summarizes in a single request when the document fits the model's context window, or reads it in parts and summarizes the combined notes. |
 | `PromptyEngine` | Provides the summary styles as Prompty templates. |
 | `DocumentChatAgent` | Answers questions from the passages most relevant to each question, the summary and recent turns. |
 | `FollowUpQuestionGenerator` | Produces document-specific suggested questions. |
+| `FigureChecker` | Reports amounts, percentages, dates and other figures in summaries and answers that the document does not contain. |
 | `FoundryLocalChatClient` | `IChatClient` used by the application; converts failures into actionable errors and removes model reasoning. |
-| `FoundryLocalService` | Discovers and starts the service, selects the model and ensures it is loaded. |
+| `FoundryLocalService` | Discovers and starts the service, selects the model, ensures it is loaded and reads its context window. |
 | `IModelManagementApi` | Version-specific model management: `FoundryServerApi` (1.x+), `FoundryServiceApi` (0.x), `OpenAICompatibleApi`. |
 
 The desktop application follows the MVVM pattern (CommunityToolkit.Mvvm) with dependency injection
@@ -226,7 +234,7 @@ Error messages state the cause and the corrective action. The most common are li
 | `accepted the request to load '…', but it is not among the loaded models` | The message lists the models Foundry Local reports as loaded. Run `foundry model run <model>` to view Foundry Local's error. |
 | `did not report which models are loaded` | Restart Foundry Local, then select **↻**. |
 | `did not answer within …s` | Increase `Foundry:Local:TimeoutSeconds`, or use a smaller or GPU-accelerated model. |
-| `The text is too long for model '…'` | Reduce `Foundry:Summarization:MaxSinglePassTokens` or `Foundry:Chat:MaxPassageTokens`, or use a model with a larger context window. |
+| `The text is too long for model '…'` | Set the model's real window in `Foundry:Local:ContextWindows`, reduce `Foundry:Summarization:SinglePassTokenCap`, `MaxSinglePassTokens` or `Foundry:Chat:MaxPassageTokens`, or use a model with a larger context window. |
 | `spent its whole answer on reasoning` | Select a model without built-in reasoning, such as `phi-4-mini`. |
 | The application does not start | Install the .NET 10 Desktop Runtime (x64). |
 
@@ -270,6 +278,7 @@ Together they cover:
 | Chat | Passage retrieval and citations, conversation history, suggested questions, edge cases (no matching passage, blank question) |
 | Foundry Local | Discovery and start (1.x+ and 0.x CLIs), version detection, model listing, loading, unloading and load confirmation, reload after idle unload, port changes, Ollama-style servers |
 | Failures | Unreachable or stopped service, failed start, unknown or undownloaded models, load errors and timeouts, answers that time out, streaming errors, a hung `foundry` command, unreadable responses, request errors |
+| Model-sized budgets | Context window read from the model's files (both Foundry Local versions, several versions downloaded, unreadable files), setting overrides, one-call summaries for documents that fit, smaller parts for small windows |
 | Figure check | Amounts (currencies, scale words, Indian digit grouping), percentages, dates in several formats, periods and multiples; invented, altered and impossible figures reported; counts, headings and citations ignored; every sample document checks clean against itself |
 | Cut-off output | Summaries, part notes and chat answers that stop at the output limit: notes re-read in smaller pieces, warnings and markers on screen, "continue" support |
 | Streaming | Summaries and answers shown as they are written, reasoning held back however the output is split, fallback to one request when a server cannot stream, reload of an unloaded model, failures partway through |
