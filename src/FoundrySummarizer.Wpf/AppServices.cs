@@ -6,6 +6,7 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Core.Verification;
 using FoundrySummarizer.Presentation.Services;
 using FoundrySummarizer.Presentation.ViewModels;
 using FoundrySummarizer.Wpf.Services;
@@ -70,6 +71,7 @@ public static class AppServices
             sp.GetRequiredService<FoundryLocalChatClient>(),
             config: sp.GetRequiredService<ChatConfig>()));
 
+        services.AddSingleton<IFigureChecker, FigureChecker>();
         services.AddSingleton<IFollowUpQuestionGenerator>(sp => new FollowUpQuestionGenerator(sp.GetRequiredService<FoundryLocalChatClient>()));
 
         services.AddSingleton<IDocumentPicker, OpenFileDocumentPicker>();

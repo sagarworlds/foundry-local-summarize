@@ -6,6 +6,7 @@ using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
 using FoundrySummarizer.Core.Summarization;
+using FoundrySummarizer.Core.Verification;
 using FoundrySummarizer.Presentation.Services;
 using FoundrySummarizer.Presentation.ViewModels;
 using FoundrySummarizer.Wpf.Views;
@@ -88,9 +89,9 @@ public class ViewTests
         options.Local.Endpoint = "http://127.0.0.1:1/v1";
         var activity = new ActivityTracker();
         var picker = new ModelPickerViewModel(new FoundryLocalChatClient(options), new Settings(), activity, TimeSpan.FromHours(1));
-        var summarizer = new SummarizerViewModel(new DocumentIngestionPipeline(), new PromptyEngine(), new Summarizer(),
+        var summarizer = new SummarizerViewModel(new DocumentIngestionPipeline(), new PromptyEngine(), new Summarizer(), new FigureChecker(),
             new NoPicker(), new NoClipboard(), new SummarizationConfig(), picker, activity);
-        var chat = new ChatViewModel(new DocumentChatAgent(new Answers()), new Questions(), picker, activity);
+        var chat = new ChatViewModel(new DocumentChatAgent(new Answers()), new Questions(), new FigureChecker(), picker, activity);
         return new MainViewModel(picker, summarizer, chat);
     }
 
