@@ -110,7 +110,20 @@ public class DocumentChatAgent
     /// <returns>The model's answer.</returns>
     /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
     /// <exception cref="LocalModelUnavailableException">No local model could answer; the question is not added to the history.</exception>
-    public async Task<string> AskQuestionAsync(string question, CancellationToken cancellationToken = default)
+    public Task<string> AskQuestionAsync(string question, CancellationToken cancellationToken = default) =>
+        AskQuestionAsync(question, partialAnswer: null, cancellationToken);
+
+    /// <summary>
+    /// Answers <paramref name="question"/> like <see cref="AskQuestionAsync(string, CancellationToken)"/>, reporting
+    /// the answer to <paramref name="partialAnswer"/> while the model writes it.
+    /// </summary>
+    /// <param name="question">The user's question; blank input returns an empty answer.</param>
+    /// <param name="partialAnswer">Receives the answer written so far; null requests the answer in one piece.</param>
+    /// <param name="cancellationToken">Cancels the model call.</param>
+    /// <returns>The model's complete answer.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
+    /// <exception cref="LocalModelUnavailableException">No local model could answer; the question is not added to the history.</exception>
+    public async Task<string> AskQuestionAsync(string question, IProgress<string>? partialAnswer, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(question)) return string.Empty;
         if (_systemMessage is null)
@@ -126,7 +139,7 @@ public class DocumentChatAgent
         messages.Add(new ChatMessage(ChatRole.User, BuildQuestionPrompt(question, LastRetrievedPassages)));
 
         var options = new ChatOptions { Temperature = 0.1f, MaxOutputTokens = _config.MaxAnswerTokens };
-        var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
+        var response = await _chatClient.StreamResponseAsync(messages, options, partialAnswer, cancellationToken);
         var answer = response.Text ?? string.Empty;
 
         RememberTurn(question, answer);

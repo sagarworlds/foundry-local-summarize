@@ -41,7 +41,12 @@ public class ViewTests
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "It is $150,000 [P1].")));
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "It is $150,000 [P1].");
+        }
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }
@@ -54,7 +59,7 @@ public class ViewTests
 
     private sealed class Summarizer : IDocumentSummarizer
     {
-        public Task<SummarizationResult> SummarizeAsync(SummarizationRequest request, IProgress<string>? progress = null, CancellationToken cancellationToken = default) =>
+        public Task<SummarizationResult> SummarizeAsync(SummarizationRequest request, IProgress<SummarizationProgress>? progress = null, CancellationToken cancellationToken = default) =>
             Task.FromResult(new SummarizationResult("- Budget: $150,000", false, 1));
     }
 
