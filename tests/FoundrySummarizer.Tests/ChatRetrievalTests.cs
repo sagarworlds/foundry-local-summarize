@@ -204,7 +204,7 @@ public class ChatRetrievalTests
         var agent = new DocumentChatAgent(client, SmallPassageRetriever());
         agent.InitializeSession("Plan.txt", BuildDocument(), string.Empty);
 
-        Assert.Equal(string.Empty, await agent.AskQuestionAsync("   "));
+        Assert.Equal(ChatAnswer.None, await agent.AskQuestionAsync("   "));
         Assert.Empty(client.Calls);
     }
 

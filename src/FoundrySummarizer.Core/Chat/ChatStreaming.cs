@@ -70,6 +70,17 @@ public static class ChatStreaming
     }
 }
 
+/// <summary>Reads what a response says about itself.</summary>
+public static class ChatResponseExtensions
+{
+    /// <summary>
+    /// True when the model stopped because it reached the output limit (<c>max_tokens</c>) rather than because it
+    /// had finished: the text ends mid-thought and whatever came next is missing.
+    /// </summary>
+    public static bool WasCutOff(this ChatResponse response) =>
+        response?.FinishReason == ChatFinishReason.Length;
+}
+
 /// <summary>
 /// Passes reports straight to a callback on the reporting thread. Unlike <see cref="Progress{T}"/>, it does not post
 /// to a synchronization context, so reports forwarded to another <see cref="IProgress{T}"/> are marshalled only once.

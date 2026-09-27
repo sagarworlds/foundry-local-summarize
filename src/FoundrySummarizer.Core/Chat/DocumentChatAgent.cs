@@ -4,6 +4,15 @@ using FoundrySummarizer.Core.Routing;
 
 namespace FoundrySummarizer.Core.Chat;
 
+/// <summary>An answer to a follow-up question.</summary>
+/// <param name="Text">The answer.</param>
+/// <param name="WasCutOff">True when the answer stopped at the output limit, so its end is missing.</param>
+public record ChatAnswer(string Text, bool WasCutOff = false)
+{
+    /// <summary>The answer to a blank question.</summary>
+    public static ChatAnswer None { get; } = new(string.Empty);
+}
+
 /// <summary>
 /// Answers follow-up questions about one document and its summary.
 /// Each question is sent with only the passages relevant to it (retrieved per question), the summary,
@@ -110,7 +119,7 @@ public class DocumentChatAgent
     /// <returns>The model's answer.</returns>
     /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
     /// <exception cref="LocalModelUnavailableException">No local model could answer; the question is not added to the history.</exception>
-    public Task<string> AskQuestionAsync(string question, CancellationToken cancellationToken = default) =>
+    public Task<ChatAnswer> AskQuestionAsync(string question, CancellationToken cancellationToken = default) =>
         AskQuestionAsync(question, partialAnswer: null, cancellationToken);
 
     /// <summary>
@@ -120,12 +129,12 @@ public class DocumentChatAgent
     /// <param name="question">The user's question; blank input returns an empty answer.</param>
     /// <param name="partialAnswer">Receives the answer written so far; null requests the answer in one piece.</param>
     /// <param name="cancellationToken">Cancels the model call.</param>
-    /// <returns>The model's complete answer.</returns>
+    /// <returns>The model's complete answer, and whether it stopped at the output limit.</returns>
     /// <exception cref="InvalidOperationException"><see cref="InitializeSession"/> has not been called.</exception>
     /// <exception cref="LocalModelUnavailableException">No local model could answer; the question is not added to the history.</exception>
-    public async Task<string> AskQuestionAsync(string question, IProgress<string>? partialAnswer, CancellationToken cancellationToken = default)
+    public async Task<ChatAnswer> AskQuestionAsync(string question, IProgress<string>? partialAnswer, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(question)) return string.Empty;
+        if (string.IsNullOrWhiteSpace(question)) return ChatAnswer.None;
         if (_systemMessage is null)
         {
             throw new InvalidOperationException("Load a document before asking questions.");
@@ -142,9 +151,10 @@ public class DocumentChatAgent
         var response = await _chatClient.StreamResponseAsync(messages, options, partialAnswer, cancellationToken);
         var answer = response.Text ?? string.Empty;
 
+        // A cut-off answer is remembered as it is, so "continue" as the next question picks up where it stopped.
         RememberTurn(question, answer);
         _previousQuestion = question;
-        return answer;
+        return new ChatAnswer(answer, response.WasCutOff());
     }
 
     /// <summary>Clears the document, summary and conversation.</summary>

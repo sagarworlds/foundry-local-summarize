@@ -33,6 +33,9 @@ public class MultiPartSummarizer : IDocumentSummarizer
     private readonly SummarizationConfig _config;
     private readonly SemanticChunker _chunker;
 
+    // Re-reads a part whose notes hit the output limit, in pieces half the size.
+    private readonly SemanticChunker _pieceChunker;
+
     /// <param name="chatClient">Model client (normally <see cref="Routing.FoundryLocalChatClient"/>).</param>
     /// <param name="promptyEngine">Renders the persona prompt for the final summary.</param>
     /// <param name="config">Token budgets; defaults are sized for 4K-context local models.</param>
@@ -45,6 +48,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
         // A part must be smaller than the single-pass budget, otherwise splitting could never make progress.
         int partTokens = Math.Min(_config.MapChunkTokens, Math.Max(50, _config.MaxSinglePassTokens / 2));
         _chunker = new SemanticChunker(partTokens, _config.MapChunkOverlapTokens);
+        _pieceChunker = new SemanticChunker(Math.Max(50, partTokens / 2), overlapTokens: 0);
     }
 
     /// <inheritdoc />
@@ -62,6 +66,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
 
         string sourceText = request.DocumentText;
         int partCount = 1;
+        int cutOffNoteParts = 0;
         bool usedMultiPart = false;
 
         if (SemanticChunker.EstimateTokens(sourceText) > _config.MaxSinglePassTokens)
@@ -69,6 +74,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
             var notes = await CondenseAsync(sourceText, request.Persona, progress, cancellationToken);
             sourceText = $"(Faithful notes taken from all {notes.PartCount} parts of a long document, in order.)\n\n{notes.Text}";
             partCount = notes.PartCount;
+            cutOffNoteParts = notes.CutOffParts;
             usedMultiPart = true;
         }
 
@@ -83,21 +89,22 @@ public class MultiPartSummarizer : IDocumentSummarizer
         var messages = _promptyEngine.RenderChatMessages(request.Persona, variables);
         var response = await _chatClient.StreamResponseAsync(messages, request.Persona.ToChatOptions(), draft, cancellationToken);
 
-        return new SummarizationResult(response.Text ?? string.Empty, usedMultiPart, partCount);
+        return new SummarizationResult(response.Text ?? string.Empty, usedMultiPart, partCount, response.WasCutOff(), cutOffNoteParts);
     }
 
     /// <summary>
     /// Replaces the document with per-part notes, repeating on the notes themselves until they fit the
     /// single-pass budget or <see cref="SummarizationConfig.MaxCondenseRounds"/> is reached.
     /// </summary>
-    /// <returns>The notes and the number of parts in the first pass.</returns>
-    private async Task<(string Text, int PartCount)> CondenseAsync(
+    /// <returns>The notes, the number of parts in the first pass, and how many parts' notes stayed cut off.</returns>
+    private async Task<(string Text, int PartCount, int CutOffParts)> CondenseAsync(
         string text,
         PromptyDocument persona,
         IProgress<SummarizationProgress>? progress,
         CancellationToken cancellationToken)
     {
         int firstPassParts = 0;
+        int cutOffParts = 0;
         int rounds = Math.Max(1, _config.MaxCondenseRounds);
 
         for (int round = 1; round <= rounds; round++)
@@ -113,10 +120,11 @@ public class MultiPartSummarizer : IDocumentSummarizer
                     ? $"Reading part {i + 1} of {parts.Count}..."
                     : $"Condensing notes (pass {round}), part {i + 1} of {parts.Count}..."));
 
-                var partNotes = await TakeNotesAsync(parts[i].Text, i + 1, parts.Count, persona, cancellationToken);
-                if (partNotes.Length > 0)
+                var partNotes = await NotesForPartAsync(parts[i].Text, i + 1, parts.Count, persona, progress, cancellationToken);
+                if (partNotes.CutOff) cutOffParts++;
+                if (partNotes.Text.Length > 0)
                 {
-                    notes.Add($"[Part {i + 1} of {parts.Count}]\n{partNotes}");
+                    notes.Add($"[Part {i + 1} of {parts.Count}]\n{partNotes.Text}");
                 }
             }
 
@@ -127,11 +135,46 @@ public class MultiPartSummarizer : IDocumentSummarizer
             }
         }
 
-        return (text, firstPassParts);
+        return (text, firstPassParts, cutOffParts);
     }
 
-    /// <returns>Notes for the part, or an empty string if it had nothing relevant.</returns>
-    private async Task<string> TakeNotesAsync(
+    /// <summary>
+    /// Takes notes on one part. Notes that stop at the output limit have lost the facts after that point, so the part
+    /// is read again in smaller pieces, each with the full output limit for its notes. Pieces are not split again,
+    /// which keeps the number of model calls bounded.
+    /// </summary>
+    /// <returns>The notes, and whether any of them still stopped at the output limit.</returns>
+    private async Task<(string Text, bool CutOff)> NotesForPartAsync(
+        string partText,
+        int partNumber,
+        int partTotal,
+        PromptyDocument persona,
+        IProgress<SummarizationProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        var notes = await TakeNotesAsync(partText, partNumber, partTotal, persona, cancellationToken);
+        if (!notes.CutOff) return notes;
+
+        var pieces = _pieceChunker.ChunkText(partText, $"part-{partNumber}");
+        if (pieces.Count < 2) return notes;
+
+        var pieceNotes = new List<string>(pieces.Count);
+        bool stillCutOff = false;
+        for (int p = 0; p < pieces.Count; p++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            progress?.Report(new SummarizationProgress(
+                $"Part {partNumber} of {partTotal} has more detail than one set of notes holds; reading it in {pieces.Count} pieces ({p + 1} of {pieces.Count})..."));
+            var piece = await TakeNotesAsync(pieces[p].Text, partNumber, partTotal, persona, cancellationToken);
+            stillCutOff |= piece.CutOff;
+            if (piece.Text.Length > 0) pieceNotes.Add(piece.Text);
+        }
+
+        return (string.Join("\n", pieceNotes), stillCutOff);
+    }
+
+    /// <returns>Notes for the part (empty if it had nothing relevant), and whether they stopped at the output limit.</returns>
+    private async Task<(string Text, bool CutOff)> TakeNotesAsync(
         string partText,
         int partNumber,
         int partTotal,
@@ -164,6 +207,6 @@ public class MultiPartSummarizer : IDocumentSummarizer
         var options = new ChatOptions { Temperature = 0f, MaxOutputTokens = _config.MapMaxOutputTokens };
         var response = await _chatClient.GetResponseAsync(messages, options, cancellationToken);
         var text = (response.Text ?? string.Empty).Trim();
-        return string.Equals(text, NoneMarker, StringComparison.OrdinalIgnoreCase) ? string.Empty : text;
+        return (string.Equals(text, NoneMarker, StringComparison.OrdinalIgnoreCase) ? string.Empty : text, response.WasCutOff());
     }
 }
