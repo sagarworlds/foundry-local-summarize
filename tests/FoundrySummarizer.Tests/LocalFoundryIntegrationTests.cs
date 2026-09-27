@@ -88,7 +88,7 @@ public class LocalFoundryIntegrationTests
         var agent = new DocumentChatAgent(client);
         agent.InitializeSession("atlas.txt", document, summaryText: string.Empty);
         var answer = await agent.AskQuestionAsync("What is the approved budget?");
-        Assert.Contains("150", answer);
+        Assert.Contains("150", answer.Text);
 
         var questions = await new FollowUpQuestionGenerator(client).SuggestAsync("atlas.txt", string.Empty, document);
         Assert.NotEmpty(questions);

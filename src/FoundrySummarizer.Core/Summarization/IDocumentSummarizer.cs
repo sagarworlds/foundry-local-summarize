@@ -11,7 +11,12 @@ public record SummarizationRequest(PromptyDocument Persona, string DocumentText)
 /// <param name="Summary">The persona-formatted summary text.</param>
 /// <param name="UsedMultiPart">True when the document was split into parts and summarized from notes.</param>
 /// <param name="PartCount">Number of parts the document was read in (1 for a single pass).</param>
-public record SummarizationResult(string Summary, bool UsedMultiPart, int PartCount);
+/// <param name="WasCutOff">True when the summary stopped at the model's output limit, so its end is missing.</param>
+/// <param name="CutOffNoteParts">
+/// Parts whose notes still reached the output limit after being re-read in smaller pieces; details from them may be
+/// missing from the summary.
+/// </param>
+public record SummarizationResult(string Summary, bool UsedMultiPart, int PartCount, bool WasCutOff = false, int CutOffNoteParts = 0);
 
 /// <summary>A progress report while a summary is being produced.</summary>
 /// <param name="Status">What is happening now, e.g. "Reading part 2 of 5...".</param>

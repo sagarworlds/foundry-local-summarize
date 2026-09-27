@@ -390,6 +390,45 @@ public class SummarizerScreenTests
     }
 
     [Fact]
+    public async Task ASummaryCutOffAtTheLimit_IsMarked_AndTheUserIsWarned()
+    {
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
+        string? handedToChat = null;
+        var vm = Create(summarizer: new Screen.Summarizer((_, _) =>
+            Task.FromResult(new SummarizationResult("### 1. Summary\n- The budget is  ", false, 1, WasCutOff: true))));
+        vm.SummaryGenerated += summary => handedToChat = summary;
+        await vm.LoadDocumentAsync(path);
+
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+
+        // The marker is part of the text, so it survives copying; the chat also knows the summary is incomplete.
+        Assert.Equal("### 1. Summary\n- The budget is" + SummarizerViewModel.CutOffMarker, vm.Summary);
+        Assert.Equal(vm.Summary, handedToChat);
+        Assert.True(vm.IsError);
+        Assert.StartsWith("⚠️ The summary stopped at the model's output limit", vm.Status);
+        File.Delete(path);
+    }
+
+    [Theory]
+    [InlineData(1, "The notes on 1 part of the document reached the output limit")]
+    [InlineData(3, "The notes on 3 parts of the document reached the output limit")]
+    public async Task NotesCutOffAtTheLimit_AreReported(int parts, string expected)
+    {
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
+        var vm = Create(summarizer: new Screen.Summarizer((_, _) =>
+            Task.FromResult(new SummarizationResult("- Budget: $150,000", true, 8, CutOffNoteParts: parts))));
+        await vm.LoadDocumentAsync(path);
+
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+
+        Assert.Equal("- Budget: $150,000", vm.Summary);                  // the summary itself is complete
+        Assert.True(vm.IsError);
+        Assert.Contains(expected, vm.Status);
+        Assert.Contains("Summary written from 8 parts", vm.Status);
+        File.Delete(path);
+    }
+
+    [Fact]
     public async Task SummarizingWithoutAStyle_AsksForOne()
     {
         var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
@@ -610,6 +649,38 @@ public class ChatScreenTests
         Assert.DoesNotContain(vm.Messages, m => m.Sender == ChatSender.Assistant);   // no half-written answer left
         Assert.Equal(ChatSender.Error, vm.Messages[^1].Sender);
         Assert.Contains("did not answer within 300s", vm.Messages[^1].Text);
+    }
+
+    /// <summary>A model whose every answer stops at the output limit.</summary>
+    private sealed class CutOffModel : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The chat streams its answers.");
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "The budget is $150,000 and the owners are") { FinishReason = ChatFinishReason.Length };
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public async Task AnAnswerCutOffAtTheLimit_IsFollowedByAHintToContinue()
+    {
+        var vm = new ChatViewModel(new DocumentChatAgent(new CutOffModel()), new Screen.Questions(), new Screen.Readiness(), new ActivityTracker());
+        vm.StartSession("minutes.txt", "Budget is $150,000.");
+        vm.InputQuestion = "What is the budget?";
+
+        await vm.SendMessageCommand.ExecuteAsync(null);
+
+        Assert.Equal(ChatSender.Assistant, vm.Messages[^2].Sender);
+        Assert.Equal("The budget is $150,000 and the owners are", vm.Messages[^2].Text);
+        Assert.Equal(ChatSender.Notice, vm.Messages[^1].Sender);
+        Assert.Contains("Ask \"continue\"", vm.Messages[^1].Text);
     }
 
     [Fact]
@@ -1013,6 +1084,24 @@ public class UserSettingsStoreTests
         {
             File.Delete(blocker);
         }
+    }
+
+    [Fact]
+    public async Task StoppedProgress_DropsReportsThatWereStillOnTheirWay()
+    {
+        var handled = new List<int>();
+        var progress = new StoppableProgress<int>(value => { lock (handled) handled.Add(value); });
+
+        progress.Report(1);
+        await Screen.Until(() => { lock (handled) return handled.Count == 1; });
+        for (int i = 2; i <= 200; i++) progress.Report(i);                // posted, most not handled yet
+        progress.Stop();
+        int countAtStop;
+        lock (handled) countAtStop = handled.Count;
+        await Task.Delay(100);
+
+        lock (handled) Assert.Equal(countAtStop, handled.Count);         // nothing handled after Stop returned
+        Assert.Throws<ArgumentNullException>(() => new StoppableProgress<int>(null!));
     }
 
     [Fact]

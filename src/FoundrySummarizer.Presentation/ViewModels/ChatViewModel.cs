@@ -225,28 +225,31 @@ public partial class ChatViewModel : ObservableObject
         IsThinking = true;
         var reply = new ChatMessageItem(ChatSender.Assistant, string.Empty, DateTime.Now);
 
-        // Progress<T> posts to the UI thread, so a report can arrive after the answer is complete; the flag drops it.
-        var inProgress = true;
-        var partialAnswer = new Progress<string>(text =>
+        // Stopped before the final answer is shown, so a late partial answer cannot overwrite it.
+        var partialAnswer = new StoppableProgress<string>(text =>
         {
-            if (!Volatile.Read(ref inProgress)) return;
             if (!Messages.Contains(reply)) Messages.Add(reply);
             reply.Text = text.TrimStart();
         });
         try
         {
-            string answer;
+            ChatAnswer answer;
             try
             {
                 answer = await _agent.AskQuestionAsync(question, partialAnswer, cancellationToken);
             }
             finally
             {
-                Volatile.Write(ref inProgress, false);
+                partialAnswer.Stop();
             }
 
-            reply.Text = string.IsNullOrWhiteSpace(answer) ? "(The model returned an empty answer. Try rephrasing the question.)" : answer.Trim();
+            reply.Text = string.IsNullOrWhiteSpace(answer.Text) ? "(The model returned an empty answer. Try rephrasing the question.)" : answer.Text.Trim();
             if (!Messages.Contains(reply)) Messages.Add(reply);
+            if (answer.WasCutOff)
+            {
+                // The agent keeps the partial answer in the conversation, so the model can pick up where it stopped.
+                Messages.Add(Notice("The answer stopped at the length limit, so its end is missing. Ask \"continue\" to get the rest."));
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

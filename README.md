@@ -32,6 +32,7 @@ the user's machine; no content is sent to a cloud service.
 - **Long-document support**: documents that exceed the model's context window are read in parts and summarized from faithful per-part notes, so no content is silently truncated.
 - **Grounded follow-up chat**: answers are drawn only from the document, cite the passages used (`[P1]`, `[P2]`, …), and state "The document does not say." when the answer is not present.
 - **Live output**: summaries and answers appear as the model writes them, instead of after the whole text is finished.
+- **No silently cut-off output**: when the model reaches its output limit, the summary is marked and the user is warned, part notes are re-read in smaller pieces so no facts are lost, and a cut-off chat answer can be finished by asking "continue".
 - **Document-specific suggested questions**: after each summary, the model proposes follow-up questions about the document's own people, figures, dates and clauses.
 - **Model selection**: lists the models downloaded on the machine, loads and unloads them on demand, and remembers the choice.
 - **Automatic service management**: locates Foundry Local (whose port changes on every start), starts it if needed, and reloads the model if Foundry Local unloads it.
@@ -268,6 +269,7 @@ Together they cover:
 | Chat | Passage retrieval and citations, conversation history, suggested questions, edge cases (no matching passage, blank question) |
 | Foundry Local | Discovery and start (1.x+ and 0.x CLIs), version detection, model listing, loading, unloading and load confirmation, reload after idle unload, port changes, Ollama-style servers |
 | Failures | Unreachable or stopped service, failed start, unknown or undownloaded models, load errors and timeouts, answers that time out, streaming errors, a hung `foundry` command, unreadable responses, request errors |
+| Cut-off output | Summaries, part notes and chat answers that stop at the output limit: notes re-read in smaller pieces, warnings and markers on screen, "continue" support |
 | Streaming | Summaries and answers shown as they are written, reasoning held back however the output is split, fallback to one request when a server cannot stream, reload of an unloaded model, failures partway through |
 | Screens | Summarize tab, Chat tab (including cancelling a question), model selector (startup, switching, failed unload or save, remembered and configured models, loading state, recovery from outages and unexpected errors) and main-window wiring |
 | Desktop app (Windows) | Every view loads with the app's styles and every binding resolves; startup settings and dependency-injection wiring; converters, the Open dialog filter and the clipboard |

@@ -15,6 +15,12 @@ namespace FoundrySummarizer.Presentation.ViewModels;
 /// </summary>
 public partial class SummarizerViewModel : ObservableObject
 {
+    /// <summary>
+    /// Ends a summary that stopped at the model's output limit. It is part of the text, so the warning stays with
+    /// the summary when it is copied elsewhere.
+    /// </summary>
+    public const string CutOffMarker = "\n\n[The summary stops here: the model reached its output limit.]";
+
     private readonly IDocumentIngestionPipeline _ingestion;
     private readonly IDocumentSummarizer _summarizer;
     private readonly IDocumentPicker _documentPicker;
@@ -191,12 +197,9 @@ public partial class SummarizerViewModel : ObservableObject
         var completed = false;
         try
         {
-            // Progress<T> posts each report to the UI synchronization context, so a report can arrive after the summary
-            // has finished; the flag stops such a late report from overwriting the final status or summary.
-            var inProgress = true;
-            var progress = new Progress<SummarizationProgress>(report =>
+            // Stopped before the final status and summary are set, so a late report cannot overwrite them.
+            var progress = new StoppableProgress<SummarizationProgress>(report =>
             {
-                if (!Volatile.Read(ref inProgress)) return;
                 SetStatus(report.Status);
                 if (report.Draft.Length > 0) Summary = report.Draft;
             });
@@ -207,14 +210,12 @@ public partial class SummarizerViewModel : ObservableObject
             }
             finally
             {
-                Volatile.Write(ref inProgress, false);
+                progress.Stop();
             }
 
-            Summary = result.Summary;
+            Summary = result.WasCutOff ? result.Summary.TrimEnd() + CutOffMarker : result.Summary;
             completed = true;
-            SetStatus(result.UsedMultiPart
-                ? $"Summary written from {result.PartCount} parts of the document. Ask follow-up questions in the Chat tab."
-                : "Summary ready. Ask follow-up questions in the Chat tab.");
+            SetStatus(DescribeResult(result), isError: result.WasCutOff || result.CutOffNoteParts > 0);
             SummaryGenerated?.Invoke(Summary);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -229,6 +230,29 @@ public partial class SummarizerViewModel : ObservableObject
         {
             if (!completed) Summary = previousSummary;
         }
+    }
+
+    /// <summary>What was produced, plus a warning for anything that stopped at the model's output limit.</summary>
+    private static string DescribeResult(SummarizationResult result)
+    {
+        var done = result.UsedMultiPart
+            ? $"Summary written from {result.PartCount} parts of the document. Ask follow-up questions in the Chat tab."
+            : "Summary ready. Ask follow-up questions in the Chat tab.";
+
+        var warnings = new List<string>();
+        if (result.WasCutOff)
+        {
+            warnings.Add("The summary stopped at the model's output limit, so its end is missing. Summarize again, or choose a larger model in the Model list.");
+        }
+
+        if (result.CutOffNoteParts > 0)
+        {
+            warnings.Add(result.CutOffNoteParts == 1
+                ? "The notes on 1 part of the document reached the output limit even in smaller pieces, so some of its details may be missing."
+                : $"The notes on {result.CutOffNoteParts} parts of the document reached the output limit even in smaller pieces, so some of their details may be missing.");
+        }
+
+        return warnings.Count == 0 ? done : $"⚠️ {string.Join(" ", warnings)} {done}";
     }
 
     // A summary that is still being written is not copied: it would look complete once pasted.

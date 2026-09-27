@@ -132,7 +132,9 @@ public class StreamingTests
     private static HttpResponseMessage Json(string json, HttpStatusCode code = HttpStatusCode.OK) => new(code) { Content = new StringContent(json) };
 
     /// <summary>A server-sent-events stream of chat completion chunks, as OpenAI-compatible servers send them.</summary>
-    private static HttpResponseMessage EventStream(params string[] pieces)
+    private static HttpResponseMessage EventStream(params string[] pieces) => EventStreamEndingWith("stop", pieces);
+
+    private static HttpResponseMessage EventStreamEndingWith(string finishReason, params string[] pieces)
     {
         var sse = new StringBuilder();
         for (int i = 0; i < pieces.Length; i++)
@@ -140,7 +142,7 @@ public class StreamingTests
             var chunk = new
             {
                 id = "c1", @object = "chat.completion.chunk", created = 1, model = "m",
-                choices = new[] { new { index = 0, delta = new { content = pieces[i] }, finish_reason = i == pieces.Length - 1 ? "stop" : null } }
+                choices = new[] { new { index = 0, delta = new { content = pieces[i] }, finish_reason = i == pieces.Length - 1 ? finishReason : null } }
             };
             sse.Append("data: ").Append(JsonSerializer.Serialize(chunk)).Append("\n\n");
         }
@@ -149,10 +151,10 @@ public class StreamingTests
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(sse.ToString(), Encoding.UTF8, "text/event-stream") };
     }
 
-    private static HttpResponseMessage Completion(string text) => Json(JsonSerializer.Serialize(new
+    private static HttpResponseMessage Completion(string text, string finishReason = "stop") => Json(JsonSerializer.Serialize(new
     {
         id = "c1", @object = "chat.completion", created = 1, model = "m",
-        choices = new[] { new { index = 0, message = new { role = "assistant", content = text }, finish_reason = "stop" } }
+        choices = new[] { new { index = 0, message = new { role = "assistant", content = text }, finish_reason = finishReason } }
     }));
 
     private static FoundryLocalChatClient ClientFor(Server server, string model)
@@ -185,6 +187,26 @@ public class StreamingTests
         Assert.Equal("The budget is $150,000.", text);
         Assert.Equal(ChatFinishReason.Stop, updates.Last(u => u.FinishReason is not null).FinishReason);
         Assert.Equal(new[] { true }, server.ChatRequests);
+    }
+
+    [Fact]
+    public async Task Client_ReportsAnAnswerThatStoppedAtTheOutputLimit()
+    {
+        // OpenAI-compatible servers say "length" when max_tokens ran out; the app must see it to warn the user.
+        var streamed = new Server(_ => EventStreamEndingWith("length", "The budget is", " $150,000 and the"), "Phi-4-mini-instruct-generic-gpu:5");
+        using (var client = ClientFor(streamed, "phi-4-mini"))
+        {
+            var response = await client.StreamResponseAsync(new[] { new ChatMessage(ChatRole.User, "Budget?") }, null, new Progress<string>());
+            Assert.True(response.WasCutOff());
+            Assert.Equal("The budget is $150,000 and the", response.Text);
+        }
+
+        var whole = new Server(_ => Completion("The budget is $150,000 and the", "length"), "Phi-4-mini-instruct-generic-gpu:5");
+        using (var client = ClientFor(whole, "phi-4-mini"))
+        {
+            var response = await client.GetResponseAsync(new[] { new ChatMessage(ChatRole.User, "Budget?") });
+            Assert.True(response.WasCutOff());
+        }
     }
 
     [Fact]
@@ -343,7 +365,8 @@ public class StreamingTests
 
         var answer = await agent.AskQuestionAsync("What is the budget?", partial);
 
-        Assert.Equal("It is $150,000 [P1].", answer);
+        Assert.Equal("It is $150,000 [P1].", answer.Text);
+        Assert.False(answer.WasCutOff);
         Assert.Equal("It is", partial.Reports[0]);
         Assert.Equal("It is $150,000 [P1].", agent.ChatHistory[^1].Text);  // history holds the complete answer
         Assert.Equal(1, model.StreamingCalls);
