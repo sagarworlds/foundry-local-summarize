@@ -16,12 +16,29 @@ public enum ChatSender
     Error
 }
 
-/// <summary>One message in the chat transcript.</summary>
-/// <param name="Sender">Who wrote it.</param>
-/// <param name="Text">Message text.</param>
-/// <param name="Timestamp">When it was added.</param>
-public record ChatMessageItem(ChatSender Sender, string Text, DateTime Timestamp)
+/// <summary>One message in the chat transcript. An answer's text grows while the model writes it.</summary>
+public partial class ChatMessageItem : ObservableObject
 {
+    /// <param name="sender">Who wrote it.</param>
+    /// <param name="text">Message text.</param>
+    /// <param name="timestamp">When it was added.</param>
+    public ChatMessageItem(ChatSender sender, string text, DateTime timestamp)
+    {
+        Sender = sender;
+        _text = text;
+        Timestamp = timestamp;
+    }
+
+    /// <summary>Who wrote it.</summary>
+    public ChatSender Sender { get; }
+
+    /// <summary>When it was added.</summary>
+    public DateTime Timestamp { get; }
+
+    /// <summary>Message text; for an answer being written, the text so far.</summary>
+    [ObservableProperty]
+    private string _text;
+
     /// <summary>True for the user's own questions (shown right-aligned).</summary>
     public bool IsUser => Sender == ChatSender.User;
 
@@ -196,24 +213,49 @@ public partial class ChatViewModel : ObservableObject
         Messages.Add(Notice($"Conversation cleared. Ask a new question about '{DocumentName}'."));
     }
 
+    /// <summary>
+    /// Asks the model and shows the answer as it is written: the answer bubble appears with the first words and
+    /// grows until the model finishes. A failed or cancelled answer is removed, so a half-written answer is never
+    /// left in the conversation looking complete.
+    /// </summary>
     private async Task AskAsync(string question, CancellationToken cancellationToken)
     {
         using var busy = _activity.Begin();
         Messages.Add(new ChatMessageItem(ChatSender.User, question, DateTime.Now));
         IsThinking = true;
+        var reply = new ChatMessageItem(ChatSender.Assistant, string.Empty, DateTime.Now);
+
+        // Progress<T> posts to the UI thread, so a report can arrive after the answer is complete; the flag drops it.
+        var inProgress = true;
+        var partialAnswer = new Progress<string>(text =>
+        {
+            if (!Volatile.Read(ref inProgress)) return;
+            if (!Messages.Contains(reply)) Messages.Add(reply);
+            reply.Text = text.TrimStart();
+        });
         try
         {
-            var answer = await _agent.AskQuestionAsync(question, cancellationToken);
-            Messages.Add(new ChatMessageItem(ChatSender.Assistant,
-                string.IsNullOrWhiteSpace(answer) ? "(The model returned an empty answer. Try rephrasing the question.)" : answer.Trim(),
-                DateTime.Now));
+            string answer;
+            try
+            {
+                answer = await _agent.AskQuestionAsync(question, partialAnswer, cancellationToken);
+            }
+            finally
+            {
+                Volatile.Write(ref inProgress, false);
+            }
+
+            reply.Text = string.IsNullOrWhiteSpace(answer) ? "(The model returned an empty answer. Try rephrasing the question.)" : answer.Trim();
+            if (!Messages.Contains(reply)) Messages.Add(reply);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            Messages.Remove(reply);
             Messages.Add(Notice("Question cancelled."));
         }
         catch (LocalModelUnavailableException ex)
         {
+            Messages.Remove(reply);
             Messages.Add(new ChatMessageItem(ChatSender.Error, ex.Message, DateTime.Now));
         }
         finally

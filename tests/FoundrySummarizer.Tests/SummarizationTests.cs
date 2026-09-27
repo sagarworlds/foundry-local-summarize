@@ -172,8 +172,18 @@ public class SummarizationTests
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, _respond(list, options))));
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+        /// <summary>Streams the scripted answer word by word.</summary>
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var list = messages.ToList();
+            Calls.Add((list, options));
+            foreach (var word in System.Text.RegularExpressions.Regex.Split(_respond(list, options), @"(?<= )"))
+            {
+                await Task.Yield();
+                yield return new ChatResponseUpdate(ChatRole.Assistant, word);
+            }
+        }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
 

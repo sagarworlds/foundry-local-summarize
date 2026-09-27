@@ -140,19 +140,24 @@ public sealed class FoundryLocalChatClient : IChatClient
 
         if (answer.Length == 0)
         {
-            throw new LocalModelUnavailableException(
-                $"Model '{ActiveModelId}' spent its whole answer on reasoning (<think>…</think>) and gave no answer. " +
-                "Choose a model without built-in reasoning, such as phi-4-mini, from the Model list.");
+            throw new LocalModelUnavailableException(ReasoningOnlyProblem());
         }
 
         response.Messages = new List<ChatMessage> { new(ChatRole.Assistant, answer) };
         return response;
     }
 
+    private string ReasoningOnlyProblem() =>
+        $"Model '{ActiveModelId}' spent its whole answer on reasoning (<think>…</think>) and gave no answer. " +
+        "Choose a model without built-in reasoning, such as phi-4-mini, from the Model list.";
+
     /// <inheritdoc />
     /// <remarks>
-    /// Streams the raw output: unlike <see cref="GetResponseAsync"/>, reasoning (<c>&lt;think&gt;</c>) is not removed,
-    /// because the app does not stream. Use <see cref="GetResponseAsync"/> for user-facing text.
+    /// Streams the answer as the model writes it, with the same care as <see cref="GetResponseAsync"/>: reasoning
+    /// models are asked not to think where they support it, and any <c>&lt;think&gt;</c> reasoning is held back
+    /// (see <see cref="StreamingReasoningFilter"/>). If the server rejects the streaming request before anything
+    /// arrives (e.g. the model was unloaded, or the server cannot stream), the answer is requested in one piece
+    /// through <see cref="GetResponseAsync"/>, which reloads the model if needed and explains any failure.
     /// </remarks>
     /// <exception cref="LocalModelUnavailableException">No local model could answer; the message says why.</exception>
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -160,23 +165,103 @@ public sealed class FoundryLocalChatClient : IChatClient
         ChatOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var messageList = messages as IList<ChatMessage> ?? messages.ToList();   // may be sent twice
         var client = await GetReadyClientAsync(cancellationToken);
-        await using var enumerator = client.GetStreamingResponseAsync(messages, options, cancellationToken).GetAsyncEnumerator(cancellationToken);
-        while (true)
+        var modelId = ActiveModelId;
+        var stream = client.GetStreamingResponseAsync(ReasoningOutputFilter.SuppressThinking(modelId, messageList), options, cancellationToken)
+            .GetAsyncEnumerator(cancellationToken);
+        try
         {
-            // C# does not allow yield inside a try with a catch, so each step is awaited in its own try.
-            ChatResponseUpdate current;
-            try
+            var start = await StartStreamAsync(stream, cancellationToken);
+            if (start == StreamStart.Rejected)
             {
-                if (!await enumerator.MoveNextAsync()) yield break;
-                current = enumerator.Current;
-            }
-            catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
-            {
-                throw new LocalModelUnavailableException(DescribeRequestFailure(ex), ex);
+                var response = await GetResponseAsync(messageList, options, cancellationToken);
+                yield return new ChatResponseUpdate(ChatRole.Assistant, response.Text)
+                {
+                    FinishReason = response.FinishReason,
+                    ModelId = response.ModelId,
+                    ResponseId = response.ResponseId
+                };
+                yield break;
             }
 
-            yield return current;
+            var filter = new StreamingReasoningFilter(modelId);
+            bool hasUpdate = start == StreamStart.HasUpdate;
+            while (hasUpdate)
+            {
+                var update = stream.Current;
+                var visible = filter.Push(update.Text);
+                if (visible.Length > 0 || update.FinishReason is not null)
+                {
+                    yield return new ChatResponseUpdate
+                    {
+                        Role = update.Role ?? ChatRole.Assistant,
+                        Contents = visible.Length > 0 ? new List<AIContent> { new TextContent(visible) } : new List<AIContent>(),
+                        FinishReason = update.FinishReason,
+                        ModelId = update.ModelId,
+                        ResponseId = update.ResponseId,
+                        MessageId = update.MessageId,
+                        CreatedAt = update.CreatedAt
+                    };
+                }
+
+                hasUpdate = await MoveNextAsync(stream, cancellationToken);
+            }
+
+            var rest = filter.Complete();
+            if (!filter.HasAnswer && filter.HadReasoning)
+            {
+                throw new LocalModelUnavailableException(ReasoningOnlyProblem());
+            }
+
+            if (rest.Length > 0)
+            {
+                yield return new ChatResponseUpdate(ChatRole.Assistant, rest) { ModelId = modelId };
+            }
+        }
+        finally
+        {
+            await stream.DisposeAsync();
+        }
+    }
+
+    private enum StreamStart
+    {
+        HasUpdate,
+        Empty,
+        Rejected
+    }
+
+    /// <summary>
+    /// Sends the streaming request (the first step does) and classifies the outcome. A rejection by the server
+    /// is not thrown here: nothing has been shown yet, so the caller can still ask for the answer in one piece.
+    /// </summary>
+    private async Task<StreamStart> StartStreamAsync(IAsyncEnumerator<ChatResponseUpdate> stream, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await stream.MoveNextAsync() ? StreamStart.HasUpdate : StreamStart.Empty;
+        }
+        catch (System.ClientModel.ClientResultException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return StreamStart.Rejected;
+        }
+        catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
+        {
+            throw new LocalModelUnavailableException(DescribeRequestFailure(ex), ex);
+        }
+    }
+
+    /// <summary>Reads the next update; a failure after text was shown cannot be retried, so it is explained instead.</summary>
+    private async Task<bool> MoveNextAsync(IAsyncEnumerator<ChatResponseUpdate> stream, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await stream.MoveNextAsync();
+        }
+        catch (Exception ex) when (IsRequestFailure(ex, cancellationToken))
+        {
+            throw new LocalModelUnavailableException(DescribeRequestFailure(ex), ex);
         }
     }
 

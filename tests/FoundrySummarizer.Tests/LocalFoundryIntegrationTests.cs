@@ -63,6 +63,23 @@ public class LocalFoundryIntegrationTests
     }
 
     [LocalFoundryFact]
+    public async Task StreamsAnAnswer_PieceByPiece()
+    {
+        using var client = new FoundryLocalChatClient(Options());
+        var pieces = new List<string>();
+
+        await foreach (var update in client.GetStreamingResponseAsync(new[] { new ChatMessage(ChatRole.User, "Count from 1 to 10, separated by spaces.") },
+                           new ChatOptions { MaxOutputTokens = 60, Temperature = 0 }))
+        {
+            if (!string.IsNullOrEmpty(update.Text)) pieces.Add(update.Text);
+        }
+
+        Assert.True(pieces.Count > 1, "The answer arrived in one piece; Foundry Local did not stream it.");
+        Assert.Contains("5", string.Concat(pieces));
+        Assert.DoesNotContain("<think>", string.Concat(pieces), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [LocalFoundryFact]
     public async Task AnswersFromTheDocument_AndSuggestsQuestionsAboutIt()
     {
         using var client = new FoundryLocalChatClient(Options());

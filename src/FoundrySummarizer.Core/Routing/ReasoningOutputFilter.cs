@@ -53,6 +53,13 @@ public static class ReasoningOutputFilter
         return text.Trim();
     }
 
+    /// <summary>
+    /// True for model families whose chat template opens the <c>&lt;think&gt;</c> block itself (DeepSeek-R1 and its
+    /// distills), so their output starts mid-thought and contains only the closing tag.
+    /// </summary>
+    public static bool StartsInsideReasoning(string modelId) =>
+        modelId.Contains("deepseek-r1", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>True for model families that accept <see cref="NoThinkDirective"/> (Qwen3).</summary>
     public static bool SupportsNoThinkDirective(string modelId) =>
         modelId.Contains("qwen3", StringComparison.OrdinalIgnoreCase);

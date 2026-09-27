@@ -56,9 +56,12 @@
 
         <!-- Conversation -->
         <Border Grid.Row="2" Style="{StaticResource ModernCard}" Margin="0,0,0,12">
+            <!-- Pixel scrolling (CanContentScroll off): an answer bubble grows while it is written, and scrolling by
+                 whole messages would jump past most of a long answer. -->
             <ListBox x:Name="MessageList" ItemsSource="{Binding Messages}"
                      Background="Transparent" BorderThickness="0"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     ScrollViewer.CanContentScroll="False">
                 <ListBox.ItemContainerStyle>
                     <!-- Plain containers: no selection highlight, bubbles stretch so right alignment works. -->
                     <Style TargetType="ListBoxItem">

@@ -93,6 +93,16 @@ public partial class SummarizerViewModel : ObservableObject
             OpenDocumentCommand.NotifyCanExecuteChanged();
         };
 
+        // Open and Copy depend on whether a summary is running. The command only reports that it stopped after the
+        // summary method has returned, so the buttons are re-checked then; checking in the method's own finally block
+        // would still see it running and leave both buttons disabled.
+        GenerateSummaryCommand.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(GenerateSummaryCommand.IsRunning)) return;
+            OpenDocumentCommand.NotifyCanExecuteChanged();
+            CopySummaryCommand.NotifyCanExecuteChanged();
+        };
+
         _ingestion = ingestion;
         _summarizer = summarizer;
         _documentPicker = documentPicker;
@@ -158,7 +168,10 @@ public partial class SummarizerViewModel : ObservableObject
         }
     }
 
-    /// <summary>Summarizes the loaded document in the selected style. Cancellable via <c>GenerateSummaryCancelCommand</c>.</summary>
+    /// <summary>
+    /// Summarizes the loaded document in the selected style, showing the summary as the model writes it.
+    /// Cancellable via <c>GenerateSummaryCancelCommand</c>.
+    /// </summary>
     [RelayCommand(CanExecute = nameof(CanGenerateSummary), IncludeCancelCommand = true)]
     private async Task GenerateSummaryAsync(CancellationToken cancellationToken)
     {
@@ -169,16 +182,23 @@ public partial class SummarizerViewModel : ObservableObject
         }
 
         using var busy = _activity.Begin();
-        OpenDocumentCommand.NotifyCanExecuteChanged();
         SetStatus($"Summarizing with {SelectedPersona.Name}...");
+
+        // The new summary replaces the old one as it is written. If it fails or is cancelled, the previous complete
+        // summary comes back, so a half-written summary is never left on screen looking finished.
+        var previousSummary = Summary;
+        Summary = string.Empty;
+        var completed = false;
         try
         {
             // Progress<T> posts each report to the UI synchronization context, so a report can arrive after the summary
-            // has finished; the flag stops such a late "Reading part…" from overwriting the final status.
+            // has finished; the flag stops such a late report from overwriting the final status or summary.
             var inProgress = true;
-            var progress = new Progress<string>(message =>
+            var progress = new Progress<SummarizationProgress>(report =>
             {
-                if (Volatile.Read(ref inProgress)) SetStatus(message);
+                if (!Volatile.Read(ref inProgress)) return;
+                SetStatus(report.Status);
+                if (report.Draft.Length > 0) Summary = report.Draft;
             });
             SummarizationResult result;
             try
@@ -191,6 +211,7 @@ public partial class SummarizerViewModel : ObservableObject
             }
 
             Summary = result.Summary;
+            completed = true;
             SetStatus(result.UsedMultiPart
                 ? $"Summary written from {result.PartCount} parts of the document. Ask follow-up questions in the Chat tab."
                 : "Summary ready. Ask follow-up questions in the Chat tab.");
@@ -206,12 +227,15 @@ public partial class SummarizerViewModel : ObservableObject
         }
         finally
         {
-            OpenDocumentCommand.NotifyCanExecuteChanged();
+            if (!completed) Summary = previousSummary;
         }
     }
 
+    // A summary that is still being written is not copied: it would look complete once pasted.
+    private bool CanCopySummary() => HasSummary && !GenerateSummaryCommand.IsRunning;
+
     /// <summary>Copies the summary to the clipboard.</summary>
-    [RelayCommand(CanExecute = nameof(HasSummary))]
+    [RelayCommand(CanExecute = nameof(CanCopySummary))]
     private void CopySummary()
     {
         var problem = _clipboard.TrySetText(Summary);

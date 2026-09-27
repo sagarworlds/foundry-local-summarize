@@ -54,9 +54,13 @@ internal static class Screen
 
     public sealed class Summarizer(Func<SummarizationRequest, CancellationToken, Task<SummarizationResult>> summarize) : IDocumentSummarizer
     {
-        public Task<SummarizationResult> SummarizeAsync(SummarizationRequest request, IProgress<string>? progress = null, CancellationToken cancellationToken = default)
+        /// <summary>Called with the progress receiver, so a test can report drafts while the summary is "written".</summary>
+        public Action<IProgress<SummarizationProgress>?>? OnStart { get; set; }
+
+        public Task<SummarizationResult> SummarizeAsync(SummarizationRequest request, IProgress<SummarizationProgress>? progress = null, CancellationToken cancellationToken = default)
         {
-            progress?.Report("Reading part 1 of 2...");
+            progress?.Report(new SummarizationProgress("Reading part 1 of 2..."));
+            OnStart?.Invoke(progress);
             return summarize(request, cancellationToken);
         }
     }
@@ -71,7 +75,16 @@ internal static class Screen
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, answer(messages.ToList()))));
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        /// <summary>Streams the answer in two pieces, like a model writing it.</summary>
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            var text = answer(messages.ToList());
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, text[..(text.Length / 2)]);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, text[(text.Length / 2)..]) { FinishReason = ChatFinishReason.Stop };
+        }
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }
@@ -85,7 +98,12 @@ internal static class Screen
             throw new InvalidOperationException("unreachable");
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            yield break;
+        }
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }
@@ -304,6 +322,74 @@ public class SummarizerScreenTests
     }
 
     [Fact]
+    public async Task TheSummaryAppearsWhileItIsWritten_AndCanBeCopiedOnlyWhenDone()
+    {
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
+        var finish = new TaskCompletionSource<SummarizationResult>();
+        var summarizer = new Screen.Summarizer((_, token) => finish.Task.WaitAsync(token))
+        {
+            OnStart = progress => progress?.Report(new SummarizationProgress("Writing the summary...", "- Budget:"))
+        };
+        var vm = Create(summarizer: summarizer);
+        await vm.LoadDocumentAsync(path);
+
+        var summarizing = vm.GenerateSummaryCommand.ExecuteAsync(null);
+        await Screen.Until(() => vm.Summary == "- Budget:");
+
+        Assert.False(vm.CopySummaryCommand.CanExecute(null));           // not copied half-written
+        Assert.False(vm.OpenDocumentCommand.CanExecute(null));
+
+        finish.SetResult(new SummarizationResult("- Budget: $150,000", false, 1));
+        await summarizing;
+
+        Assert.Equal("- Budget: $150,000", vm.Summary);
+        Assert.True(vm.CopySummaryCommand.CanExecute(null));
+        File.Delete(path);
+    }
+
+    [Fact]
+    public async Task AfterASummary_OpenAndCopyAreEnabledAgain()
+    {
+        // The buttons are re-checked when the summary command stops running. Checking earlier (while it still counts
+        // as running) left Open disabled after every summary.
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
+        var vm = Create(summarizer: new Screen.Summarizer(async (_, _) =>
+        {
+            await Task.Delay(20);                                        // a real, asynchronous summary
+            return new SummarizationResult("- Budget: $150,000", false, 1);
+        }));
+        await vm.LoadDocumentAsync(path);
+        bool? openShown = null, copyShown = null;
+        vm.OpenDocumentCommand.CanExecuteChanged += (_, _) => openShown = vm.OpenDocumentCommand.CanExecute(null);
+        vm.CopySummaryCommand.CanExecuteChanged += (_, _) => copyShown = vm.CopySummaryCommand.CanExecute(null);
+
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+        await Screen.Until(() => openShown == true && copyShown == true); // what the buttons last showed
+        File.Delete(path);
+    }
+
+    [Fact]
+    public async Task AFailedSummary_BringsBackThePreviousOne_InsteadOfAHalfWrittenOne()
+    {
+        var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
+        int run = 0;
+        var summarizer = new Screen.Summarizer((_, _) => ++run == 1
+            ? Task.FromResult(new SummarizationResult("- Budget: $150,000", false, 1))
+            : Task.FromException<SummarizationResult>(new LocalModelUnavailableException("Model 'phi-4-mini' did not answer within 300s.")));
+        summarizer.OnStart = progress => { if (run == 1) progress?.Report(new SummarizationProgress("Writing the summary...", "- Owner: Pri")); };
+        var vm = Create(summarizer: summarizer);
+        await vm.LoadDocumentAsync(path);
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);
+
+        await vm.GenerateSummaryCommand.ExecuteAsync(null);                // second style fails partway
+
+        Assert.Equal("- Budget: $150,000", vm.Summary);
+        Assert.True(vm.IsError);
+        Assert.Contains("did not answer within 300s", vm.Status);
+        File.Delete(path);
+    }
+
+    [Fact]
     public async Task SummarizingWithoutAStyle_AsksForOne()
     {
         var path = Screen.TempFile("minutes.txt", "Budget is $150,000.");
@@ -454,10 +540,76 @@ public class ChatScreenTests
     [InlineData(ChatSender.Notice, "ℹ️", false)]
     public void Messages_AreLabelledBySender(ChatSender sender, string header, bool isUser)
     {
+        var before = DateTime.Now;
         var message = new ChatMessageItem(sender, "text", DateTime.Now);
+
+        Assert.InRange(message.Timestamp, before, DateTime.Now);
 
         Assert.Equal(header, message.Header);
         Assert.Equal(isUser, message.IsUser);
+    }
+
+    /// <summary>A model that writes its answer in two pieces and waits for the test between them.</summary>
+    private sealed class TwoPieceModel(Exception? failAfterFirstPiece = null) : IChatClient
+    {
+        public TaskCompletionSource SecondPiece { get; } = new();
+
+        public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The chat streams its answers.");
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "It is");
+            await SecondPiece.Task.WaitAsync(cancellationToken);
+            if (failAfterFirstPiece is not null) throw failAfterFirstPiece;
+            yield return new ChatResponseUpdate(ChatRole.Assistant, " $150,000 [P1].");
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    [Fact]
+    public async Task TheAnswerAppearsWhileItIsWritten()
+    {
+        var model = new TwoPieceModel();
+        var vm = new ChatViewModel(new DocumentChatAgent(model), new Screen.Questions(), new Screen.Readiness(), new ActivityTracker());
+        vm.StartSession("minutes.txt", "Budget is $150,000.");
+        vm.InputQuestion = "What is the budget?";
+
+        var asking = vm.SendMessageCommand.ExecuteAsync(null);
+        await Screen.Until(() => vm.Messages[^1].Sender == ChatSender.Assistant);
+
+        var reply = vm.Messages[^1];
+        Assert.Equal("It is", reply.Text);
+        Assert.True(vm.IsThinking);
+
+        model.SecondPiece.SetResult();
+        await asking;
+
+        Assert.Same(reply, vm.Messages[^1]);                               // the same bubble grew; no second one
+        Assert.Equal("It is $150,000 [P1].", reply.Text);
+        Assert.False(vm.IsThinking);
+    }
+
+    [Fact]
+    public async Task AnAnswerThatFailsPartway_IsReplacedByTheReason()
+    {
+        var model = new TwoPieceModel(new LocalModelUnavailableException("Model 'phi-4-mini' did not answer within 300s."));
+        var vm = new ChatViewModel(new DocumentChatAgent(model), new Screen.Questions(), new Screen.Readiness(), new ActivityTracker());
+        vm.StartSession("minutes.txt", "Budget is $150,000.");
+        vm.InputQuestion = "What is the budget?";
+
+        var asking = vm.SendMessageCommand.ExecuteAsync(null);
+        await Screen.Until(() => vm.Messages[^1].Sender == ChatSender.Assistant);
+        model.SecondPiece.SetResult();
+        await asking;
+
+        Assert.DoesNotContain(vm.Messages, m => m.Sender == ChatSender.Assistant);   // no half-written answer left
+        Assert.Equal(ChatSender.Error, vm.Messages[^1].Sender);
+        Assert.Contains("did not answer within 300s", vm.Messages[^1].Text);
     }
 
     [Fact]

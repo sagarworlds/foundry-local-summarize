@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using FoundrySummarizer.Core.Chat;
 using FoundrySummarizer.Core.Ingestion;
 using FoundrySummarizer.Core.Personas;
 using FoundrySummarizer.Core.Routing;
@@ -49,7 +50,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
     /// <inheritdoc />
     public async Task<SummarizationResult> SummarizeAsync(
         SummarizationRequest request,
-        IProgress<string>? progress = null,
+        IProgress<SummarizationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -71,13 +72,16 @@ public class MultiPartSummarizer : IDocumentSummarizer
             usedMultiPart = true;
         }
 
-        progress?.Report(usedMultiPart
+        var status = usedMultiPart
             ? $"Writing the final summary from notes on {partCount} parts..."
-            : "Generating summary...");
+            : "Writing the summary...";
+        progress?.Report(new SummarizationProgress(status));
 
+        // The final summary is streamed so the user reads it as it is written instead of waiting for the whole of it.
+        var draft = progress is null ? null : new RelayProgress<string>(text => progress.Report(new SummarizationProgress(status, text)));
         var variables = new Dictionary<string, string> { ["documentText"] = sourceText };
         var messages = _promptyEngine.RenderChatMessages(request.Persona, variables);
-        var response = await _chatClient.GetResponseAsync(messages, request.Persona.ToChatOptions(), cancellationToken);
+        var response = await _chatClient.StreamResponseAsync(messages, request.Persona.ToChatOptions(), draft, cancellationToken);
 
         return new SummarizationResult(response.Text ?? string.Empty, usedMultiPart, partCount);
     }
@@ -90,7 +94,7 @@ public class MultiPartSummarizer : IDocumentSummarizer
     private async Task<(string Text, int PartCount)> CondenseAsync(
         string text,
         PromptyDocument persona,
-        IProgress<string>? progress,
+        IProgress<SummarizationProgress>? progress,
         CancellationToken cancellationToken)
     {
         int firstPassParts = 0;
@@ -105,9 +109,9 @@ public class MultiPartSummarizer : IDocumentSummarizer
             for (int i = 0; i < parts.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                progress?.Report(round == 1
+                progress?.Report(new SummarizationProgress(round == 1
                     ? $"Reading part {i + 1} of {parts.Count}..."
-                    : $"Condensing notes (pass {round}), part {i + 1} of {parts.Count}...");
+                    : $"Condensing notes (pass {round}), part {i + 1} of {parts.Count}..."));
 
                 var partNotes = await TakeNotesAsync(parts[i].Text, i + 1, parts.Count, persona, cancellationToken);
                 if (partNotes.Length > 0)
